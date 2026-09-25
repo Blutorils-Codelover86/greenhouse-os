@@ -1,0 +1,414 @@
+#include <stdint.h>
+
+/* VGA text mode */
+#define VGA_WIDTH 80
+#define VGA_HEIGHT 25
+#define VGA_MEMORY ((uint16_t*)0xB8000)
+
+/* Colors */
+#define BLACK 0
+#define BLUE 1
+#define GREEN 2
+#define CYAN 3
+#define RED 4
+#define MAGENTA 5
+#define BROWN 6
+#define LIGHT_GREY 7
+#define DARK_GREY 8
+#define LIGHT_BLUE 9
+#define LIGHT_GREEN 10
+#define LIGHT_CYAN 11
+#define LIGHT_RED 12
+#define LIGHT_MAGENTA 13
+#define YELLOW 14
+#define WHITE 15
+
+static uint8_t current_color =
+    (BLACK << 4) | LIGHT_GREY;
+
+static int cursor_row = 0;
+static int cursor_col = 0;
+
+static char command_buffer[128];
+static int command_length = 0;
+
+static char last_command[128];
+static int last_command_length = 0;
+
+static int shift_pressed = 0;
+static int caps_lock = 0;
+
+/* ---------------- VGA functions ---------------- */
+
+static void set_color(uint8_t foreground, uint8_t background) {
+    current_color = (background << 4) | foreground;
+}
+
+static void clear_screen(void) {
+    for (int row = 0; row < VGA_HEIGHT; row++) {
+        for (int col = 0; col < VGA_WIDTH; col++) {
+            VGA_MEMORY[row * VGA_WIDTH + col] =
+                ((uint16_t)current_color << 8) | ' ';
+        }
+    }
+
+    cursor_row = 0;
+    cursor_col = 0;
+}
+
+static void scroll_screen(void) {
+    for (int row = 1; row < VGA_HEIGHT; row++) {
+        for (int col = 0; col < VGA_WIDTH; col++) {
+            VGA_MEMORY[(row - 1) * VGA_WIDTH + col] =
+                VGA_MEMORY[row * VGA_WIDTH + col];
+        }
+    }
+
+    for (int col = 0; col < VGA_WIDTH; col++) {
+        VGA_MEMORY[(VGA_HEIGHT - 1) * VGA_WIDTH + col] =
+            ((uint16_t)current_color << 8) | ' ';
+    }
+
+    cursor_row = VGA_HEIGHT - 1;
+    cursor_col = 0;
+}
+
+static void put_char(char c) {
+    if (c == '\n') {
+        cursor_col = 0;
+        cursor_row++;
+
+        if (cursor_row >= VGA_HEIGHT) {
+            scroll_screen();
+        }
+
+        return;
+    }
+
+    if (c == '\b') {
+        if (cursor_col > 0) {
+            cursor_col--;
+            VGA_MEMORY[cursor_row * VGA_WIDTH + cursor_col] =
+                ((uint16_t)current_color << 8) | ' ';
+        }
+
+        return;
+    }
+
+    VGA_MEMORY[cursor_row * VGA_WIDTH + cursor_col] =
+        ((uint16_t)current_color << 8) | c;
+
+    cursor_col++;
+
+    if (cursor_col >= VGA_WIDTH) {
+        cursor_col = 0;
+        cursor_row++;
+    }
+
+    if (cursor_row >= VGA_HEIGHT) {
+        scroll_screen();
+    }
+}
+
+static void print(const char* text) {
+    int i = 0;
+
+    while (text[i] != '\0') {
+        put_char(text[i]);
+        i++;
+    }
+}
+
+/* ---------------- Utility functions ---------------- */
+
+static int string_equals(const char* a, const char* b) {
+    int i = 0;
+
+    while (a[i] != '\0' && b[i] != '\0') {
+        if (a[i] != b[i]) {
+            return 0;
+        }
+
+        i++;
+    }
+
+    return a[i] == '\0' && b[i] == '\0';
+}
+
+static unsigned char inb(unsigned short port) {
+    unsigned char result;
+
+    __asm__ volatile (
+        "inb %1, %0"
+        : "=a"(result)
+        : "Nd"(port)
+    );
+
+    return result;
+}
+
+static void outb(unsigned short port, unsigned char value) {
+    __asm__ volatile (
+        "outb %0, %1"
+        :
+        : "a"(value), "Nd"(port)
+    );
+}
+
+/* ---------------- Command functions ---------------- */
+
+static void show_prompt(void) {
+    set_color(LIGHT_GREEN, BLACK);
+    print("berry@greenhouse");
+
+    set_color(LIGHT_GREY, BLACK);
+    print(":~$ ");
+}
+
+static void erase_current_command(void) {
+    while (command_length > 0) {
+        put_char('\b');
+        command_length--;
+    }
+
+    command_buffer[0] = '\0';
+}
+
+static void save_command(void) {
+    int i = 0;
+
+    while (command_buffer[i] != '\0' && i < 127) {
+        last_command[i] = command_buffer[i];
+        i++;
+    }
+
+    last_command[i] = '\0';
+    last_command_length = i;
+}
+
+static void recall_last_command(void) {
+    erase_current_command();
+
+    for (int i = 0; i < last_command_length; i++) {
+        command_buffer[i] = last_command[i];
+        put_char(last_command[i]);
+    }
+
+    command_length = last_command_length;
+    command_buffer[command_length] = '\0';
+}
+
+/* ---------------- Keyboard ---------------- */
+
+static char apply_shift(char c) {
+    if (c >= 'a' && c <= 'z') {
+        if (shift_pressed || caps_lock) {
+            return c - 32;
+        }
+    }
+
+    if (shift_pressed) {
+        switch (c) {
+            case '1': return '!';
+            case '2': return '@';
+            case '3': return '#';
+            case '4': return '$';
+            case '5': return '%';
+            case '6': return '^';
+            case '7': return '&';
+            case '8': return '*';
+            case '9': return '(';
+            case '0': return ')';
+            case '-': return '_';
+            case '=': return '+';
+            case '[': return '{';
+            case ']': return '}';
+            case ';': return ':';
+            case '\'': return '"';
+            case ',': return '<';
+            case '.': return '>';
+            case '/': return '?';
+            case '\\': return '|';
+            case '`': return '~';
+        }
+    }
+
+    return c;
+}
+
+static char keyboard_read(void) {
+    static const char keyboard_map[128] = {
+        0, 27,
+        '1', '2', '3', '4', '5', '6', '7', '8', '9', '0',
+        '-', '=', '\b',
+        '\t',
+        'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p',
+        '[', ']', '\n',
+        0,
+        'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l',
+        ';', '\'', '`',
+        0,
+        '\\',
+        'z', 'x', 'c', 'v', 'b', 'n', 'm',
+        ',', '.', '/',
+        0,
+        '*',
+        0,
+        ' ',
+    };
+
+    while (!(inb(0x64) & 1)) {
+    }
+
+    unsigned char scancode = inb(0x60);
+
+    /* Key release */
+    if (scancode & 0x80) {
+        scancode &= 0x7F;
+
+        if (scancode == 0x2A || scancode == 0x36) {
+            shift_pressed = 0;
+        }
+
+        return 0;
+    }
+
+    /* Left or right Shift */
+    if (scancode == 0x2A || scancode == 0x36) {
+        shift_pressed = 1;
+        return 0;
+    }
+
+    /* Caps Lock */
+    if (scancode == 0x3A) {
+        caps_lock = !caps_lock;
+        return 0;
+    }
+
+    /* Up Arrow */
+    if (scancode == 0x48) {
+        recall_last_command();
+        return 0;
+    }
+
+    if (scancode >= 128) {
+        return 0;
+    }
+
+    char c = keyboard_map[scancode];
+
+    if (c == 0) {
+        return 0;
+    }
+
+    return apply_shift(c);
+}
+
+/* ---------------- Commands ---------------- */
+
+static void run_command(void) {
+    print("\n");
+
+    if (string_equals(command_buffer, "help")) {
+        set_color(LIGHT_CYAN, BLACK);
+        print("Available commands:\n");
+
+        set_color(LIGHT_GREY, BLACK);
+        print("  help   - Show this help message\n");
+        print("  about  - About Greenhouse OS\n");
+        print("  clear  - Clear the screen\n");
+        print("  reboot - Restart the computer\n");
+    }
+    else if (string_equals(command_buffer, "about")) {
+        set_color(LIGHT_GREEN, BLACK);
+        print("Greenhouse OS v0.5\n");
+        print("Built by Vivaan, Founder, Berry-Tech\n");
+        print("\"If it runs code, you can make it your own.\"\n");
+    }
+    else if (string_equals(command_buffer, "clear")) {
+        clear_screen();
+    }
+    else if (string_equals(command_buffer, "reboot")) {
+        set_color(YELLOW, BLACK);
+        print("Rebooting Greenhouse OS...\n");
+
+        /*
+         * Wait until the keyboard controller is ready,
+         * then send the reboot command.
+         */
+        while (inb(0x64) & 0x02) {
+        }
+
+        outb(0x64, 0xFE);
+
+        while (1) {
+            __asm__ volatile ("hlt");
+        }
+    }
+    else if (command_buffer[0] != '\0') {
+        set_color(LIGHT_RED, BLACK);
+        print("Unknown command. Type 'help'.\n");
+    }
+
+    command_buffer[0] = '\0';
+    command_length = 0;
+
+    set_color(LIGHT_GREY, BLACK);
+    show_prompt();
+}
+
+/* ---------------- Kernel entry ---------------- */
+
+void kernel_main(void) {
+    set_color(LIGHT_GREY, BLACK);
+    clear_screen();
+
+    set_color(LIGHT_GREEN, BLACK);
+    print("GREENHOUSE OS\n");
+
+    set_color(LIGHT_GREY, BLACK);
+    print("A tiny operating system built from scratch.\n");
+    print("Type 'help' to see available commands.\n\n");
+
+    show_prompt();
+
+    while (1) {
+        char c = keyboard_read();
+
+        if (c == 0) {
+            continue;
+        }
+
+        if (c == '\b') {
+            if (command_length > 0) {
+                command_length--;
+                command_buffer[command_length] = '\0';
+                put_char('\b');
+            }
+
+            continue;
+        }
+
+        if (c == '\n') {
+            save_command();
+            run_command();
+            continue;
+        }
+
+        if (command_length < 127) {
+            command_buffer[command_length] = c;
+            command_length++;
+
+            command_buffer[command_length] = '\0';
+
+            put_char(c);
+        }
+    }
+}
+cd ~/greenhouse/kernel
+gcc -m32 -ffreestanding -c kernel.c -o kernel.o
+ld -m elf_i386 -T linker.ld -o greenhouse.bin boot.o kernel.o
+cp greenhouse.bin ../iso/boot/
+cd ..
+grub-mkrescue -o greenhouse.iso iso
+qemu-system-i386 -cdrom greenhouse.iso
