@@ -93,8 +93,9 @@ isr_common_stub:
     ; Ensure Direction Flag is clear for C calling convention
     cld
 
-    ; Call C interrupt dispatcher
+    ; Call C interrupt dispatcher (returns active rsp in RAX)
     call interrupt_dispatch
+    mov rsp, rax
 
     ; Restore registers
     pop r15
@@ -116,8 +117,32 @@ isr_common_stub:
     ; Discard interrupt number and error code
     add rsp, 16
 
-    ; Return from interrupt
+    ; Return from interrupt (Ring 0 or Ring 3)
     iretq
+
+; ------------------------------------------------------------------------------
+; GDT & TSS Loading Functions
+; ------------------------------------------------------------------------------
+global gdt_load_flush
+gdt_load_flush:
+    lgdt [rdi]
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+    push qword 0x08
+    lea rax, [rel .reload_cs]
+    push rax
+    retfq
+.reload_cs:
+    ret
+
+global tss_load
+tss_load:
+    ltr di
+    ret
 
 ; ------------------------------------------------------------------------------
 ; IDT Pointer Loading Function: void idt_load(void* idt_ptr)

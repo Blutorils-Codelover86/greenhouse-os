@@ -299,3 +299,26 @@ int vfs_rename_path(const char* current_path, const char* old_path, const char* 
     if (!parent || !parent->rename) return -1;
     return parent->rename(parent, old_leaf, new_path);
 }
+
+int vfs_close(vfs_node_t* node) {
+    if (!node) return -1;
+    if (node->close) {
+        return node->close(node);
+    }
+    return 0;
+}
+
+int vfs_create(vfs_node_t* parent, const char* name, uint32_t flags) {
+    if (!parent || !parent->create) return -1;
+    return parent->create(parent, name, flags);
+}
+
+int vfs_mkdir(vfs_node_t* parent, const char* name) {
+    if (!parent || !parent->mkdir) return -1;
+    return parent->mkdir(parent, name);
+}
+
+int vfs_delete(vfs_node_t* parent, const char* name) {
+    if (!parent || !parent->delete) return -1;
+    return parent->delete(parent, name);
+}

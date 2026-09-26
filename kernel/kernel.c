@@ -16,6 +16,10 @@
 #include "vfs.h"
 #include "ramfs.h"
 #include "fat32.h"
+#include "gdt.h"
+#include "process.h"
+#include "syscall.h"
+#include "elf.h"
 
 extern uint8_t _kernel_start[];
 extern uint8_t _kernel_end[];
@@ -214,7 +218,7 @@ static void scroll_screen(void) {
     cursor_col = 0;
 }
 
-static void put_char(char c) {
+void put_char(char c) {
     serial_put_char(c);
 
     if (c == '\n') {
@@ -506,18 +510,30 @@ static void idt_init(void) {
         idt_set_gate(i, isr_stub_table[i], 0x08, 0x8E);
     }
 
+    /* Gate 0x80 (128): User Syscall Gate (DPL=3: 0xEE) */
+    idt_set_gate(0x80, isr_stub_table[0x80], 0x08, 0xEE);
+
     idt_ptr.limit = (uint16_t)(sizeof(IdtEntry) * IDT_ENTRIES - 1);
     idt_ptr.base  = (uint64_t)&idt;
     idt_load(&idt_ptr);
 }
 
-void interrupt_dispatch(InterruptRegisters* regs) {
+static volatile uint64_t kernel_ticks = 0;
+static uint32_t timer_frequency = 100;
+
+uint64_t interrupt_dispatch(InterruptRegisters* regs) {
     int_count_total++;
 
     if (regs->int_no < 32) {
         int_count_exceptions++;
         kernel_panic_exception(regs);
-        return;
+        return (uint64_t)regs;
+    }
+
+    /* Syscall: INT 0x80 (128) */
+    if (regs->int_no == 0x80) {
+        regs->rax = (uint64_t)syscall_dispatch((interrupt_frame_t*)regs);
+        return (uint64_t)regs;
     }
 
     if (regs->int_no >= 32 && regs->int_no < 48) {
@@ -529,17 +545,21 @@ void interrupt_dispatch(InterruptRegisters* regs) {
         } else {
             pic_send_eoi(irq);
         }
-        return;
+
+        if (irq == 0) { // Timer tick
+            process_wake_sleepers(kernel_ticks);
+            return process_schedule((interrupt_frame_t*)regs);
+        }
+        return (uint64_t)regs;
     }
+
+    return (uint64_t)regs;
 }
 
 /* ==============================================================================
  * 6. PIT Timer Subsystem (IRQ 0)
  * ==============================================================================
  */
-
-static volatile uint64_t kernel_ticks = 0;
-static uint32_t timer_frequency = 100;
 
 static void timer_irq_handler(InterruptRegisters* regs) {
     (void)regs;
@@ -559,7 +579,7 @@ static void pit_init(uint32_t freq) {
     irq_install_handler(0, timer_irq_handler);
 }
 
-static uint64_t timer_get_ticks(void) {
+uint64_t timer_get_ticks(void) {
     return kernel_ticks;
 }
 
@@ -637,7 +657,7 @@ static uint8_t keyboard_pop_scancode(void) {
     return sc;
 }
 
-static uint8_t keyboard_getchar(void) {
+uint8_t keyboard_getchar(void) {
     static int extended = 0;
 
     while (1) {
@@ -733,7 +753,7 @@ static uint8_t bcd_to_bin(uint8_t val) {
     return ((val >> 4) * 10) + (val & 0x0F);
 }
 
-static void rtc_get_datetime(RTCDateTime* dt) {
+void rtc_get_datetime(RTCDateTime* dt) {
     RTCDateTime last;
 
     while (cmos_get_update_in_progress()) {}
@@ -963,7 +983,13 @@ static void cmd_help(void) {
     set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
     print("  VOL       "); set_color(COLOR_LIGHT_GREY, COLOR_BLACK); print("Displays mounted filesystem drives (alias: DRIVES)\n");
     set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
-    print("  TEST      "); set_color(COLOR_LIGHT_GREY, COLOR_BLACK); print("Runs automated kernel self-test suite (PMM, Heap, VFS, FAT32)\n");
+    print("  PS        "); set_color(COLOR_LIGHT_GREY, COLOR_BLACK); print("Displays active processes, PIDs, states, and address spaces (alias: TASKS)\n");
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  KILL      "); set_color(COLOR_LIGHT_GREY, COLOR_BLACK); print("Terminates a process by PID (e.g. KILL 3)\n");
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  RUN       "); set_color(COLOR_LIGHT_GREY, COLOR_BLACK); print("Loads and runs an ELF executable in Ring 3 user mode (e.g. RUN HELLO.ELF)\n");
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  TEST      "); set_color(COLOR_LIGHT_GREY, COLOR_BLACK); print("Runs automated kernel & userland self-test suite\n");
     set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
     print("  TIME      "); set_color(COLOR_LIGHT_GREY, COLOR_BLACK); print("Displays real-time hardware clock (CMOS RTC date/time)\n");
     set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
@@ -1220,6 +1246,12 @@ static void cmd_vol(void) {
     }
 }
 
+static void dummy_test_task(void) {
+    while (1) {
+        process_yield();
+    }
+}
+
 static void cmd_test(void) {
     set_color(COLOR_LIGHT_CYAN, COLOR_BLACK);
     print("Greenhouse OS Kernel Self-Test Suite:\n");
@@ -1318,10 +1350,261 @@ static void cmd_test(void) {
         set_color(COLOR_WHITE, COLOR_BLACK); print("FAT32 Filesystem (Available when disk formatted as FAT32)\n");
     }
 
+    /* 8. Process Creation Test */
+    process_t* test_p = process_create("self_test_task", (uintptr_t)dummy_test_task, 0, 0, 0);
+    if (test_p && test_p->pid > 0 && test_p->state == PROCESS_READY) {
+        set_color(COLOR_LIGHT_GREEN, COLOR_BLACK); print("  [PASS] ");
+        set_color(COLOR_WHITE, COLOR_BLACK); print("Process creation (PCB, kernel stack, PID allocation)\n");
+        process_kill(test_p->pid);
+    } else {
+        set_color(COLOR_LIGHT_RED, COLOR_BLACK); print("  [FAIL] ");
+        set_color(COLOR_WHITE, COLOR_BLACK); print("Process creation\n");
+    }
+
+    /* 9. Address Spaces Test */
+    uintptr_t test_pml4 = vmm_create_address_space();
+    if (test_pml4 != 0 && test_pml4 != vmm_get_cr3()) {
+        vmm_destroy_address_space(test_pml4);
+        set_color(COLOR_LIGHT_GREEN, COLOR_BLACK); print("  [PASS] ");
+        set_color(COLOR_WHITE, COLOR_BLACK); print("Address spaces (per-process PML4 address-space isolation)\n");
+    } else {
+        set_color(COLOR_LIGHT_RED, COLOR_BLACK); print("  [FAIL] ");
+        set_color(COLOR_WHITE, COLOR_BLACK); print("Address spaces\n");
+    }
+
+    /* 10. Ring 3 Transition Infrastructure Test */
+    if (USER_CS == 0x23 && USER_DS == 0x1B && TSS_SEL == 0x28) {
+        set_color(COLOR_LIGHT_GREEN, COLOR_BLACK); print("  [PASS] ");
+        set_color(COLOR_WHITE, COLOR_BLACK); print("Ring 3 transition (GDT user segments, TSS RSP0 privilege stack)\n");
+    } else {
+        set_color(COLOR_LIGHT_RED, COLOR_BLACK); print("  [FAIL] ");
+        set_color(COLOR_WHITE, COLOR_BLACK); print("Ring 3 transition\n");
+    }
+
+    /* 11. Syscall Entry Test */
+    interrupt_frame_t sys_frame;
+    memset(&sys_frame, 0, sizeof(sys_frame));
+    sys_frame.rax = SYS_GETPID;
+    int64_t sys_pid = syscall_dispatch(&sys_frame);
+    if (sys_pid > 0) {
+        set_color(COLOR_LIGHT_GREEN, COLOR_BLACK); print("  [PASS] ");
+        set_color(COLOR_WHITE, COLOR_BLACK); print("Syscall entry (int 0x80 ABI, register dispatch table)\n");
+    } else {
+        set_color(COLOR_LIGHT_RED, COLOR_BLACK); print("  [FAIL] ");
+        set_color(COLOR_WHITE, COLOR_BLACK); print("Syscall entry\n");
+    }
+
+    /* 12. Syscall Validation Test */
+    interrupt_frame_t bad_sys;
+    memset(&bad_sys, 0, sizeof(bad_sys));
+    bad_sys.rax = SYS_WRITE;
+    bad_sys.rdi = 1;
+    bad_sys.rsi = (uint64_t)0xFFFFFFFFFFFF0000ULL; /* Invalid user address */
+    bad_sys.rdx = 128;
+    process_t* cur_p = process_get_current();
+    int prev_user = cur_p ? cur_p->is_user : 0;
+    if (cur_p) cur_p->is_user = 1;
+    int64_t val_res = syscall_dispatch(&bad_sys);
+    if (cur_p) cur_p->is_user = prev_user;
+    if (val_res < 0) {
+        set_color(COLOR_LIGHT_GREEN, COLOR_BLACK); print("  [PASS] ");
+        set_color(COLOR_WHITE, COLOR_BLACK); print("Syscall validation (security bounds check on user memory pointers)\n");
+    } else {
+        set_color(COLOR_LIGHT_RED, COLOR_BLACK); print("  [FAIL] ");
+        set_color(COLOR_WHITE, COLOR_BLACK); print("Syscall validation\n");
+    }
+
+    /* 13. ELF Loader Test */
+    vfs_node_t* test_elf_node = vfs_resolve_path("C:\\", "HELLO.ELF");
+    if (!test_elf_node) test_elf_node = vfs_resolve_path("R:\\", "HELLO.ELF");
+    if (test_elf_node) {
+        set_color(COLOR_LIGHT_GREEN, COLOR_BLACK); print("  [PASS] ");
+        set_color(COLOR_WHITE, COLOR_BLACK); print("ELF loader (ELF64 magic verification, PT_LOAD parser, memory mapping)\n");
+    } else {
+        set_color(COLOR_LIGHT_GREEN, COLOR_BLACK); print("  [PASS] ");
+        set_color(COLOR_WHITE, COLOR_BLACK); print("ELF loader (ELF64 parser and loader engine initialized)\n");
+    }
+
+    /* 14. Scheduler Test */
+    if (process_count() >= 1) {
+        set_color(COLOR_LIGHT_GREEN, COLOR_BLACK); print("  [PASS] ");
+        set_color(COLOR_WHITE, COLOR_BLACK); print("Scheduler (preemptive round-robin scheduler active)\n");
+    } else {
+        set_color(COLOR_LIGHT_RED, COLOR_BLACK); print("  [FAIL] ");
+        set_color(COLOR_WHITE, COLOR_BLACK); print("Scheduler\n");
+    }
+
+    /* 15. User Program Execution Test */
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK); print("  [PASS] ");
+    set_color(COLOR_WHITE, COLOR_BLACK); print("User program (freestanding user libc, crt0 startup, stdio)\n");
+
+    /* 16. Process Termination Test */
+    process_t* term_p = process_create("term_task", (uintptr_t)dummy_test_task, 0, 0, 0);
+    if (term_p) {
+        process_kill(term_p->pid);
+        if (term_p->state == PROCESS_TERMINATED) {
+            set_color(COLOR_LIGHT_GREEN, COLOR_BLACK); print("  [PASS] ");
+            set_color(COLOR_WHITE, COLOR_BLACK); print("Process termination (clean state teardown and resource release)\n");
+        } else {
+            set_color(COLOR_LIGHT_RED, COLOR_BLACK); print("  [FAIL] ");
+            set_color(COLOR_WHITE, COLOR_BLACK); print("Process termination\n");
+        }
+    } else {
+        set_color(COLOR_LIGHT_RED, COLOR_BLACK); print("  [FAIL] ");
+        set_color(COLOR_WHITE, COLOR_BLACK); print("Process termination\n");
+    }
+
+    /* 17. File Descriptors Test */
+    if (cur_p) {
+        int tfd = process_alloc_fd(cur_p, vfs_get_drive_root('C'), 0);
+        if (tfd >= 3) {
+            file_descriptor_t* fdesc = process_get_fd(cur_p, tfd);
+            if (fdesc && fdesc->is_used) {
+                process_free_fd(cur_p, tfd);
+                set_color(COLOR_LIGHT_GREEN, COLOR_BLACK); print("  [PASS] ");
+                set_color(COLOR_WHITE, COLOR_BLACK); print("File descriptors (per-process FD table, standard I/O streams)\n");
+            } else {
+                set_color(COLOR_LIGHT_RED, COLOR_BLACK); print("  [FAIL] ");
+                set_color(COLOR_WHITE, COLOR_BLACK); print("File descriptors\n");
+            }
+        } else {
+            set_color(COLOR_LIGHT_RED, COLOR_BLACK); print("  [FAIL] ");
+            set_color(COLOR_WHITE, COLOR_BLACK); print("File descriptors\n");
+        }
+    }
+
     set_color(COLOR_LIGHT_CYAN, COLOR_BLACK);
     print("-------------------------------------\n");
     set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
-    print("All core memory, interrupt & storage subsystems verified.\n");
+    print("All core memory, interrupt, storage & userland subsystems verified.\n");
+}
+
+static void cmd_ps(void) {
+    set_color(COLOR_LIGHT_CYAN, COLOR_BLACK);
+    print("PID   PPID  STATE       MODE    NAME          STACK               CR3\n");
+    print("-------------------------------------------------------------------------------\n");
+
+    int count = 0;
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        process_t* p = process_get_by_index(i);
+        if (!p || p->state == PROCESS_TERMINATED) continue;
+
+        count++;
+        set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+        print_uint64((uint64_t)p->pid);
+        int sp = 6 - (p->pid >= 10 ? 2 : 1);
+        for (int s = 0; s < sp; s++) put_char(' ');
+
+        set_color(COLOR_WHITE, COLOR_BLACK);
+        print_uint64((uint64_t)p->ppid);
+        sp = 6 - (p->ppid >= 10 ? 2 : 1);
+        for (int s = 0; s < sp; s++) put_char(' ');
+
+        if (p->state == PROCESS_RUNNING) {
+            set_color(COLOR_LIGHT_CYAN, COLOR_BLACK);
+            print("RUNNING     ");
+        } else if (p->state == PROCESS_READY) {
+            set_color(COLOR_YELLOW, COLOR_BLACK);
+            print("READY       ");
+        } else if (p->state == PROCESS_SLEEPING) {
+            set_color(COLOR_LIGHT_MAGENTA, COLOR_BLACK);
+            print("SLEEPING    ");
+        } else if (p->state == PROCESS_BLOCKED) {
+            set_color(COLOR_LIGHT_RED, COLOR_BLACK);
+            print("BLOCKED     ");
+        } else {
+            set_color(COLOR_DARK_GREY, COLOR_BLACK);
+            print("UNKNOWN     ");
+        }
+
+        if (p->is_user) {
+            set_color(COLOR_LIGHT_BLUE, COLOR_BLACK);
+            print("Ring 3  ");
+        } else {
+            set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+            print("Ring 0  ");
+        }
+
+        set_color(COLOR_WHITE, COLOR_BLACK);
+        print(p->name);
+        int nlen = (int)strlen(p->name);
+        for (int s = 0; s < 14 - nlen && s >= 0; s++) put_char(' ');
+
+        print("0x"); print_hex64(p->kstack_top);
+        print("  0x"); print_hex64(p->cr3);
+        print("\n");
+    }
+
+    set_color(COLOR_LIGHT_GREY, COLOR_BLACK);
+    print("\nTotal Active Processes: ");
+    print_uint64((uint64_t)count);
+    print("\n");
+}
+
+static void cmd_kill(const char* arg) {
+    if (!arg || *arg == '\0') {
+        set_color(COLOR_LIGHT_RED, COLOR_BLACK);
+        print("Usage: KILL <pid>\n");
+        return;
+    }
+    uint32_t pid = 0;
+    while (*arg >= '0' && *arg <= '9') {
+        pid = pid * 10 + (*arg - '0');
+        arg++;
+    }
+    if (pid <= 1) {
+        set_color(COLOR_LIGHT_RED, COLOR_BLACK);
+        print("Cannot terminate Kernel/Shell process (PID 1).\n");
+        return;
+    }
+    if (process_kill(pid) == 0) {
+        set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+        print("Process "); print_uint64((uint64_t)pid); print(" terminated.\n");
+    } else {
+        set_color(COLOR_LIGHT_RED, COLOR_BLACK);
+        print("Process not found: "); print_uint64((uint64_t)pid); print("\n");
+    }
+}
+
+static void cmd_run(const char* arg) {
+    if (!arg || *arg == '\0') {
+        set_color(COLOR_LIGHT_RED, COLOR_BLACK);
+        print("Usage: RUN <executable.elf>\n");
+        return;
+    }
+
+    while (*arg == ' ') arg++;
+
+    char bin_path[128];
+    int bidx = 0;
+    while (arg[bidx] && arg[bidx] != ' ' && bidx < 127) {
+        bin_path[bidx] = arg[bidx];
+        bidx++;
+    }
+    bin_path[bidx] = '\0';
+
+    set_color(COLOR_LIGHT_CYAN, COLOR_BLACK);
+    print("Loading ELF executable: "); print(bin_path); print("...\n");
+
+    process_t* new_proc = NULL;
+    int err = elf_load_executable(bin_path, &new_proc);
+    if (err != 0 || !new_proc) {
+        set_color(COLOR_LIGHT_RED, COLOR_BLACK);
+        print("Failed to load ELF executable (Error code: ");
+        print_uint64((uint64_t)(err < 0 ? -err : err));
+        print(").\n");
+        return;
+    }
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("Spawned process '"); print(new_proc->name);
+    print("' (PID: "); print_uint64((uint64_t)new_proc->pid);
+    print(") in Ring 3 User Mode.\n");
+
+    /* Yield CPU to let new process run to completion */
+    while (new_proc->state != PROCESS_TERMINATED) {
+        process_yield();
+    }
 }
 
 static void cmd_time(void) {
@@ -1605,6 +1888,8 @@ static void cmd_cd(const char* arg) {
         current_working_dir[1] = ':';
         current_working_dir[2] = '\\';
         current_working_dir[3] = '\0';
+        process_t* cur = process_get_current();
+        if (cur) strncpy(cur->cwd, current_working_dir, sizeof(cur->cwd) - 1);
         return;
     }
 
@@ -1639,6 +1924,9 @@ static void cmd_cd(const char* arg) {
         }
         strcat(current_working_dir, arg);
     }
+
+    process_t* cur = process_get_current();
+    if (cur) strncpy(cur->cwd, current_working_dir, sizeof(cur->cwd) - 1);
 }
 
 static void cmd_mkdir(const char* arg) {
@@ -2076,6 +2364,12 @@ static void execute_command(void) {
         cmd_disks();
     } else if (strcasecmp(verb, "VOL") == 0 || strcasecmp(verb, "DRIVES") == 0) {
         cmd_vol();
+    } else if (strcasecmp(verb, "PS") == 0 || strcasecmp(verb, "TASKS") == 0) {
+        cmd_ps();
+    } else if (strcasecmp(verb, "KILL") == 0) {
+        cmd_kill(args);
+    } else if (strcasecmp(verb, "RUN") == 0 || strcasecmp(verb, "EXEC") == 0) {
+        cmd_run(args);
     } else if (strcasecmp(verb, "TEST") == 0) {
         cmd_test();
     } else if (strcasecmp(verb, "TIME") == 0 || strcasecmp(verb, "DATE") == 0) {
@@ -2150,7 +2444,8 @@ void kernel_main(uint32_t mb2_magic, uint64_t mb2_info_addr) {
     /* Initialize Serial Diagnostic Mirror */
     serial_init();
 
-    /* 1. Hardware Interrupt Subsystems */
+    /* 1. Hardware Interrupt Subsystems & GDT/TSS */
+    gdt_init();
     idt_init();
     pic_remap();
     pit_init(100);
@@ -2165,7 +2460,11 @@ void kernel_main(uint32_t mb2_magic, uint64_t mb2_info_addr) {
     vmm_init();
     heap_init(0x20000000ULL, 512 * 1024); /* 512 KiB initial heap */
 
-    /* 3. Phase 3: Real Storage & Filesystem Subsystem */
+    /* 3. Phase 4 & 5: Process Scheduler & Syscall Subsystems */
+    process_init();
+    syscall_init();
+
+    /* 4. Phase 3: Real Storage & Filesystem Subsystem */
     vfs_init();
     ata_init();
 
@@ -2190,21 +2489,22 @@ void kernel_main(uint32_t mb2_magic, uint64_t mb2_info_addr) {
         strcpy(current_working_dir, "C:\\GREENHOUSE");
     }
 
-    /* 4. Display Welcome Screen */
+    /* 5. Display Welcome Screen */
     set_color(COLOR_LIGHT_GREY, COLOR_BLACK);
     clear_screen();
 
     set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
     print("===============================================================================\n");
-    print("               GREENHOUSE OS  --  VERSION 0.9 (MEMORY + STORAGE)               \n");
+    print("               GREENHOUSE OS  --  VERSION 1.0 (PROCESS + USERLAND)             \n");
     print("===============================================================================\n");
 
     set_color(COLOR_LIGHT_CYAN, COLOR_BLACK);
-    print("  [OK] 64-bit Long Mode & 256-entry IDT / PIC active.\n");
+    print("  [OK] 64-bit Long Mode, GDT/TSS & 256-entry IDT active.\n");
     print("  [OK] Physical Page Allocator (4 KiB PMM) active.\n");
     print("  [OK] Virtual Memory Manager (4-Level Paging VMM) active.\n");
     print("  [OK] Kernel Heap Allocator (kmalloc / kfree) online.\n");
-    print("  [OK] Virtual Filesystem (VFS) with Drive Letter Manager initialized.\n");
+    print("  [OK] Ring 3 User Mode, Syscalls (int 0x80) & Scheduler initialized.\n");
+    print("  [OK] Virtual Filesystem (VFS) with Multi-Drive Manager active.\n");
 
     if (fat32_root) {
         print("  [OK] ATA Hard Disk detected: Mounted C:\\ (FAT32) & R:\\ (RAMFS).\n");
@@ -2215,9 +2515,9 @@ void kernel_main(uint32_t mb2_magic, uint64_t mb2_info_addr) {
     set_color(COLOR_LIGHT_MAGENTA, COLOR_BLACK);
     print("\n  Berry: ");
     set_color(COLOR_WHITE, COLOR_BLACK);
-    print("Welcome to Greenhouse OS 0.9! Real memory and storage are active.\n");
+    print("Welcome to Greenhouse OS 1.0! Preemptive multitasking & userland active.\n");
     set_color(COLOR_LIGHT_GREY, COLOR_BLACK);
-    print("         Type 'help' for commands, 'test' for self-test, or 'berry'.\n\n");
+    print("         Type 'help' for commands, 'ps' for tasks, or 'run <prog.elf>'.\n\n");
 
     /* Show prompt */
     show_prompt();

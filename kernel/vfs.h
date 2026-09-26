@@ -84,8 +84,12 @@ int vfs_resolve_parent_and_leaf(const char* current_path, const char* path, vfs_
 
 int vfs_read(vfs_node_t* node, uint32_t offset, uint32_t size, uint8_t* buffer);
 int vfs_write(vfs_node_t* node, uint32_t offset, uint32_t size, const uint8_t* buffer);
+int vfs_close(vfs_node_t* node);
 int vfs_readdir(vfs_node_t* node, uint32_t index, vfs_dirent_t* dirent);
 vfs_node_t* vfs_finddir(vfs_node_t* node, const char* name);
+int vfs_create(vfs_node_t* parent, const char* name, uint32_t flags);
+int vfs_mkdir(vfs_node_t* parent, const char* name);
+int vfs_delete(vfs_node_t* parent, const char* name);
 int vfs_mkdir_path(const char* current_path, const char* path);
 int vfs_create_file(const char* current_path, const char* path);
 int vfs_delete_path(const char* current_path, const char* path);

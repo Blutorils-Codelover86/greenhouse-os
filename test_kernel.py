@@ -65,7 +65,7 @@ def run_tests():
     time.sleep(3.0)
     proc.stdin.write('sendkey ret\n')
     proc.stdin.flush()
-    time.sleep(2.5)
+    time.sleep(3.5)
 
     commands = [
         'help',
@@ -77,10 +77,20 @@ def run_tests():
         'heap',
         'disks',
         'vol',
+        'ps',
+        'tasks',
         'test',
         'c:',
         'vol',
         'dir',
+        'run HELLO.ELF',
+        'run ECHO.ELF Hello from Ring 3 Greenhouse OS Userland!',
+        'run CAT.ELF README.TXT',
+        'run LS.ELF',
+        'run PS.ELF',
+        'run TEST.ELF',
+        'run SLEEP.ELF 1',
+        'ps',
         'type README.TXT',
         'echo Hello FAT32 Persistent File > NOTE.TXT',
         'type NOTE.TXT',
@@ -99,7 +109,7 @@ def run_tests():
     ]
 
     for c in commands:
-        send_cmd(c, delay_after=0.6)
+        send_cmd(c, delay_after=0.7)
 
     # Capture interactive operations screenshot
     proc.stdin.write('screendump /tmp/screen_interactive.ppm\n')

@@ -152,6 +152,24 @@ def make_fat32_disk(filename="disk.img", size_mb=64):
     info_content = b"Greenhouse OS Storage Architecture:\r\n- VFS Abstraction\r\n- RAMFS (/)\r\n- ATA/IDE PIO Driver\r\n- Microsoft FAT32 Driver\r\n"
     add_file_to_dir(docs_cluster, "INFO    TXT", 0x20, info_content)
 
+    # Add ELF User Binaries from user/bin/
+    elf_files = [
+        ("HELLO   ELF", "user/bin/HELLO.ELF"),
+        ("ECHO    ELF", "user/bin/ECHO.ELF"),
+        ("CAT     ELF", "user/bin/CAT.ELF"),
+        ("LS      ELF", "user/bin/LS.ELF"),
+        ("SLEEP   ELF", "user/bin/SLEEP.ELF"),
+        ("PS      ELF", "user/bin/PS.ELF"),
+        ("TEST    ELF", "user/bin/TEST.ELF")
+    ]
+
+    for name11, filepath in elf_files:
+        if os.path.exists(filepath):
+            with open(filepath, "rb") as ef:
+                elf_data = ef.read()
+            add_file_to_dir(2, name11, 0x20, elf_data)
+            print(f"  -> Added {name11.strip()} ({len(elf_data)} bytes)")
+
     with open(filename, "wb") as f:
         f.write(disk)
     print(f"[OK] Created FAT32 disk image: {filename} ({size_mb} MB)")

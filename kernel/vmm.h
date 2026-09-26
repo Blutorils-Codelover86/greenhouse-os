@@ -21,5 +21,9 @@ int vmm_unmap_page(uintptr_t virt);
 uintptr_t vmm_virt_to_phys(uintptr_t virt);
 uintptr_t vmm_get_cr3(void);
 void vmm_invlpg(uintptr_t virt);
+uintptr_t vmm_create_address_space(void);
+void vmm_destroy_address_space(uintptr_t pml4_phys);
+int vmm_map_page_in(uintptr_t pml4_phys, uintptr_t virt, uintptr_t phys, uint64_t flags);
+void vmm_switch_pml4(uintptr_t pml4_phys);
 
 #endif /* VMM_H */

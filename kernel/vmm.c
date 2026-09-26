@@ -24,9 +24,10 @@ void vmm_init(void) {
     kernel_pml4_phys = vmm_get_cr3();
 }
 
-int vmm_map_page(uintptr_t virt, uintptr_t phys, uint64_t flags) {
-    if (kernel_pml4_phys == 0) {
-        vmm_init();
+int vmm_map_page_in(uintptr_t pml4_phys, uintptr_t virt, uintptr_t phys, uint64_t flags) {
+    if (pml4_phys == 0) {
+        if (kernel_pml4_phys == 0) vmm_init();
+        pml4_phys = kernel_pml4_phys;
     }
 
     size_t pml4_idx = (virt >> 39) & 0x1FF;
@@ -34,7 +35,7 @@ int vmm_map_page(uintptr_t virt, uintptr_t phys, uint64_t flags) {
     size_t pd_idx   = (virt >> 21) & 0x1FF;
     size_t pt_idx   = (virt >> 12) & 0x1FF;
 
-    uint64_t* pml4 = (uint64_t*)kernel_pml4_phys;
+    uint64_t* pml4 = (uint64_t*)pml4_phys;
 
     /* 1. PDPT Table */
     if (!(pml4[pml4_idx] & VMM_FLAG_PRESENT)) {
@@ -42,6 +43,8 @@ int vmm_map_page(uintptr_t virt, uintptr_t phys, uint64_t flags) {
         if (!new_pdpt) return -1;
         memset_page((void*)new_pdpt);
         pml4[pml4_idx] = new_pdpt | VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | (flags & VMM_FLAG_USER);
+    } else if (flags & VMM_FLAG_USER) {
+        pml4[pml4_idx] |= VMM_FLAG_USER | VMM_FLAG_WRITABLE;
     }
     uint64_t* pdpt = (uint64_t*)(pml4[pml4_idx] & ~0xFFFULL);
 
@@ -51,6 +54,8 @@ int vmm_map_page(uintptr_t virt, uintptr_t phys, uint64_t flags) {
         if (!new_pd) return -1;
         memset_page((void*)new_pd);
         pdpt[pdpt_idx] = new_pd | VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | (flags & VMM_FLAG_USER);
+    } else if (flags & VMM_FLAG_USER) {
+        pdpt[pdpt_idx] |= VMM_FLAG_USER | VMM_FLAG_WRITABLE;
     }
     uint64_t* pd = (uint64_t*)(pdpt[pdpt_idx] & ~0xFFFULL);
 
@@ -77,6 +82,8 @@ int vmm_map_page(uintptr_t virt, uintptr_t phys, uint64_t flags) {
         if (!new_pt) return -1;
         memset_page((void*)new_pt);
         pd[pd_idx] = new_pt | VMM_FLAG_PRESENT | VMM_FLAG_WRITABLE | (flags & VMM_FLAG_USER);
+    } else if (flags & VMM_FLAG_USER) {
+        pd[pd_idx] |= VMM_FLAG_USER | VMM_FLAG_WRITABLE;
     }
     uint64_t* pt = (uint64_t*)(pd[pd_idx] & ~0xFFFULL);
 
@@ -85,6 +92,41 @@ int vmm_map_page(uintptr_t virt, uintptr_t phys, uint64_t flags) {
     vmm_invlpg(virt);
 
     return 0;
+}
+
+int vmm_map_page(uintptr_t virt, uintptr_t phys, uint64_t flags) {
+    return vmm_map_page_in(kernel_pml4_phys, virt, phys, flags);
+}
+
+uintptr_t vmm_create_address_space(void) {
+    if (kernel_pml4_phys == 0) vmm_init();
+
+    uintptr_t new_pml4_phys = pmm_alloc_frame();
+    if (!new_pml4_phys) return 0;
+    memset_page((void*)new_pml4_phys);
+
+    uint64_t* src_pml4 = (uint64_t*)kernel_pml4_phys;
+    uint64_t* dst_pml4 = (uint64_t*)new_pml4_phys;
+
+    /* Copy kernel PML4 entries (lower 1GB identity map and kernel mappings) */
+    for (int i = 0; i < 512; i++) {
+        if (src_pml4[i] & VMM_FLAG_PRESENT) {
+            dst_pml4[i] = src_pml4[i];
+        }
+    }
+
+    return new_pml4_phys;
+}
+
+void vmm_destroy_address_space(uintptr_t pml4_phys) {
+    if (pml4_phys == 0 || pml4_phys == kernel_pml4_phys) return;
+    /* In future, free user PT entries; currently free the PML4 frame */
+    pmm_free_frame(pml4_phys);
+}
+
+void vmm_switch_pml4(uintptr_t pml4_phys) {
+    if (pml4_phys == 0) pml4_phys = kernel_pml4_phys;
+    __asm__ volatile ("mov %0, %%cr3" : : "r"(pml4_phys) : "memory");
 }
 
 int vmm_unmap_page(uintptr_t virt) {
