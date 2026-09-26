@@ -85,6 +85,10 @@ void  graphics_draw_circle(int cx, int cy, int radius, uint32_t color);
 void  graphics_fill_circle(int cx, int cy, int radius, uint32_t color);
 void  graphics_fill_gradient_v(int x, int y, int w, int h, uint32_t top, uint32_t bottom);
 void  graphics_fill_gradient_h(int x, int y, int w, int h, uint32_t left, uint32_t right);
+void  graphics_draw_rounded_rect(int x, int y, int w, int h, int r, uint32_t color);
+void  graphics_fill_rounded_rect(int x, int y, int w, int h, int r, uint32_t color);
+void  graphics_fill_rounded_gradient_v(int x, int y, int w, int h, int r, uint32_t top, uint32_t bottom);
+void  graphics_fill_glass_panel(int x, int y, int w, int h, int r, uint32_t bg_top, uint32_t bg_bot, uint32_t border_col, uint32_t highlight_col);
 void  graphics_blit(int x, int y, int w, int h, const uint32_t* pixels, int src_pitch);
 
 /* Colour helpers */

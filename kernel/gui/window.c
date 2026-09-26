@@ -68,5 +68,5 @@ int window_includes(const window_t* win, int x, int y) {
 }
 
 void window_invalidate(window_t* win) {
-    (void)win;   /* the compositor redraws the whole screen each frame */
+    (void)win;
 }

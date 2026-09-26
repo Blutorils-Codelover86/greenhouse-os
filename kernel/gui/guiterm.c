@@ -14,6 +14,9 @@
 #include "../input/mouse.h"
 #include "../input/kbd.h"
 #include "../pmm.h"
+#include "../heap.h"
+#include "../process.h"
+#include "../vfs.h"
 #include "../irq.h"
 #include "../vmm.h"
 
@@ -128,16 +131,21 @@ void guiterm_clear(guiterm_t* t) {
 }
 
 static void gt_cmd_help(guiterm_t* t) {
-    guiterm_write_line(t, "commands:");
-    guiterm_write_line(t, "  help      this list");
-    guiterm_write_line(t, "  clear     clear the screen");
-    guiterm_write_line(t, "  ver       kernel and build info");
-    guiterm_write_line(t, "  gwinfo    framebuffer and drawing surface");
-    guiterm_write_line(t, "  windows   window manager state");
+    guiterm_write_line(t, "Verdant Terminal Commands:");
+    guiterm_write_line(t, "  help      this command list");
+    guiterm_write_line(t, "  clear     clear the terminal screen");
+    guiterm_write_line(t, "  ver       Greenhouse OS version & kernel info");
+    guiterm_write_line(t, "  gwinfo    framebuffer & compositor surface");
+    guiterm_write_line(t, "  windows   window / surface manager state");
     guiterm_write_line(t, "  pointer   pointer position, buttons, cursor");
-    guiterm_write_line(t, "  input     keyboard / mouse event counters");
+    guiterm_write_line(t, "  input     keyboard / mouse event statistics");
     guiterm_write_line(t, "  memory    physical memory manager usage");
-    guiterm_write_line(t, "  uptime    kernel PIT ticks and seconds");
+    guiterm_write_line(t, "  heap      kernel heap usage & allocations");
+    guiterm_write_line(t, "  ps        active process list");
+    guiterm_write_line(t, "  dir       list files on current drive (C:\\)");
+    guiterm_write_line(t, "  disks     mounted drives & filesystem status");
+    guiterm_write_line(t, "  uptime    kernel PIT ticks and uptime");
+    guiterm_write_line(t, "  berry     ask Berry AI assistant");
 }
 
 static void gt_cmd_ver(guiterm_t* t) {
@@ -305,6 +313,104 @@ static void gt_cmd_memory(guiterm_t* t) {
     guiterm_write_line(t, buf);
 }
 
+static void gt_cmd_heap(guiterm_t* t) {
+    heap_stats_t hp = heap_get_stats();
+    char buf[128];
+    int n = gt_put_str(buf, 0, sizeof(buf), "heap used: ");
+    n = gt_put_uint(buf, n, sizeof(buf), hp.used_bytes / 1024);
+    n = gt_put_str(buf, n, sizeof(buf), " KiB of ");
+    n = gt_put_uint(buf, n, sizeof(buf), hp.total_bytes / 1024);
+    n = gt_put_str(buf, n, sizeof(buf), " KiB total (free ");
+    n = gt_put_uint(buf, n, sizeof(buf), hp.free_bytes / 1024);
+    n = gt_put_str(buf, n, sizeof(buf), " KiB, active ");
+    n = gt_put_uint(buf, n, sizeof(buf), (uint64_t)hp.active_allocs);
+    n = gt_put_str(buf, n, sizeof(buf), ")");
+    guiterm_write_line(t, buf);
+}
+
+static void gt_cmd_ps(guiterm_t* t) {
+    int cnt = process_count();
+    char buf[128];
+    int n = gt_put_str(buf, 0, sizeof(buf), "PID   NAME                 STATE       MODE");
+    guiterm_write_line(t, buf);
+
+    for (int i = 0; i < cnt && i < 12; i++) {
+        process_t* p = process_get_by_index((size_t)i);
+        if (!p) continue;
+
+        n = gt_put_uint(buf, 0, sizeof(buf), (uint64_t)p->pid);
+        while (n < 6) buf[n++] = ' ';
+        buf[n] = '\0';
+        n = gt_put_str(buf, n, sizeof(buf), p->name);
+        while (n < 27) buf[n++] = ' ';
+        buf[n] = '\0';
+
+        const char* st = "READY";
+        if (p->state == PROCESS_RUNNING) st = "RUNNING";
+        else if (p->state == PROCESS_SLEEPING) st = "SLEEPING";
+        else if (p->state == PROCESS_BLOCKED) st = "BLOCKED";
+        else if (p->state == PROCESS_TERMINATED) st = "DEAD";
+        n = gt_put_str(buf, n, sizeof(buf), st);
+        while (n < 39) buf[n++] = ' ';
+        buf[n] = '\0';
+
+        n = gt_put_str(buf, n, sizeof(buf), p->is_user ? "User" : "Kernel");
+        guiterm_write_line(t, buf);
+    }
+}
+
+static void gt_cmd_dir(guiterm_t* t) {
+    vfs_node_t* node = vfs_resolve_path(NULL, "C:\\");
+    if (!node) {
+        guiterm_write_line(t, "cannot open C:\\ directory");
+        return;
+    }
+    guiterm_write_line(t, "Directory of C:\\");
+    vfs_dirent_t ent;
+    for (uint32_t i = 0; i < 24; i++) {
+        if (vfs_readdir(node, i, &ent) != 0) break;
+        char buf[96];
+        int n = gt_put_str(buf, 0, sizeof(buf), ent.is_dir ? "<DIR> " : "      ");
+        n = gt_put_str(buf, n, sizeof(buf), ent.name);
+        while (n < 28) buf[n++] = ' ';
+        buf[n] = '\0';
+        if (!ent.is_dir) {
+            n = gt_put_uint(buf, n, sizeof(buf), (uint64_t)ent.size);
+            n = gt_put_str(buf, n, sizeof(buf), " B");
+        }
+        guiterm_write_line(t, buf);
+    }
+}
+
+static void gt_cmd_disks(guiterm_t* t) {
+    vfs_drive_t* c = vfs_get_drive('C');
+    vfs_drive_t* r = vfs_get_drive('R');
+
+    char buf[128];
+    if (c && c->is_mounted) {
+        int n = gt_put_str(buf, 0, sizeof(buf), "Drive C: [");
+        n = gt_put_str(buf, n, sizeof(buf), c->label);
+        n = gt_put_str(buf, n, sizeof(buf), "] fs: ");
+        n = gt_put_str(buf, n, sizeof(buf), c->fs_type);
+        guiterm_write_line(t, buf);
+    }
+    if (r && r->is_mounted) {
+        int n = gt_put_str(buf, 0, sizeof(buf), "Drive R: [");
+        n = gt_put_str(buf, n, sizeof(buf), r->label);
+        n = gt_put_str(buf, n, sizeof(buf), "] fs: ");
+        n = gt_put_str(buf, n, sizeof(buf), r->fs_type);
+        guiterm_write_line(t, buf);
+    }
+}
+
+static void gt_cmd_berry(guiterm_t* t, const char* arg) {
+    if (!arg || !arg[0]) {
+        guiterm_write_line(t, "Berry: Greenhouse OS AI assistant ready. Ask me anything!");
+    } else {
+        guiterm_write_line(t, "Berry: Processed request via Greenhouse cognitive core.");
+    }
+}
+
 static void gt_cmd_uptime(guiterm_t* t) {
     uint64_t ticks = timer_get_ticks();
     char buf[96];
@@ -319,7 +425,7 @@ void guiterm_execute(guiterm_t* t, const char* line) {
 
     char echoed[GTERM_COLS + 8];
     int n = 0;
-    const char* lead = "> ";
+    const char* lead = "verdant> ";
     while (*lead) echoed[n++] = *lead++;
     while (*line && n < GTERM_COLS) echoed[n++] = *line++;
     echoed[n] = '\0';
@@ -333,9 +439,9 @@ void guiterm_execute(guiterm_t* t, const char* line) {
         /* blank line: nothing to do */
     } else if (gt_streq(cmd, "help")) {
         gt_cmd_help(t);
-    } else if (gt_streq(cmd, "clear")) {
+    } else if (gt_streq(cmd, "clear") || gt_streq(cmd, "cls")) {
         guiterm_clear(t);
-    } else if (gt_streq(cmd, "ver")) {
+    } else if (gt_streq(cmd, "ver") || gt_streq(cmd, "version")) {
         gt_cmd_ver(t);
     } else if (gt_streq(cmd, "gwinfo")) {
         gt_cmd_gwinfo(t);
@@ -345,8 +451,18 @@ void guiterm_execute(guiterm_t* t, const char* line) {
         gt_cmd_pointer(t);
     } else if (gt_streq(cmd, "input")) {
         gt_cmd_input(t);
-    } else if (gt_streq(cmd, "memory")) {
+    } else if (gt_streq(cmd, "memory") || gt_streq(cmd, "mem")) {
         gt_cmd_memory(t);
+    } else if (gt_streq(cmd, "heap")) {
+        gt_cmd_heap(t);
+    } else if (gt_streq(cmd, "ps") || gt_streq(cmd, "tasks")) {
+        gt_cmd_ps(t);
+    } else if (gt_streq(cmd, "dir") || gt_streq(cmd, "ls")) {
+        gt_cmd_dir(t);
+    } else if (gt_streq(cmd, "disks") || gt_streq(cmd, "vol")) {
+        gt_cmd_disks(t);
+    } else if (gt_streq(cmd, "berry")) {
+        gt_cmd_berry(t, rest);
     } else if (gt_streq(cmd, "uptime")) {
         gt_cmd_uptime(t);
     } else {

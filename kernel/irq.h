@@ -57,4 +57,9 @@ void pic_set_irq_mask(uint8_t irq, int masked);
 uint64_t timer_get_ticks(void);
 uint32_t timer_get_frequency(void);
 
+/* Block for a number of PIT ticks. Unlike a busy-wait over a calibrated loop
+ * count this is real time: the same pause lasts the same wall time on a fast
+ * host, under emulation, or on whatever machine the ISO lands on. */
+void timer_delay_ticks(uint64_t ticks);
+
 #endif /* IRQ_H */

@@ -33,6 +33,7 @@
 #include "input/mouse.h"
 #include "gui/gui.h"
 #include "gui/wm.h"
+#include "gui/verdant.h"
 
 extern uint8_t _kernel_start[];
 extern uint8_t _kernel_end[];
@@ -582,6 +583,17 @@ uint32_t timer_get_frequency(void) {
     return timer_frequency;
 }
 
+void timer_delay_ticks(uint64_t ticks) {
+    if (ticks == 0) return;
+
+    uint64_t deadline = kernel_ticks + ticks;
+    while (kernel_ticks < deadline) {
+        /* Interrupts stay on so the PIT can wake us, and the scheduler can run
+         * anything else that became runnable in the meantime. */
+        __asm__ volatile ("sti; hlt");
+    }
+}
+
 static uint64_t timer_get_uptime_seconds(void) {
     return kernel_ticks / timer_frequency;
 }
@@ -930,7 +942,9 @@ static void cmd_help(void) {
     set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
     print("  GFX       "); set_color(COLOR_LIGHT_GREY, COLOR_BLACK); print("Graphics self test: gfx [width [height [bpp]] [hold]] draws test frames, returns\n");
     set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
-    print("  GUI [sec] "); set_color(COLOR_LIGHT_GREY, COLOR_BLACK); print("Windowed desktop (windows, mouse, terminal); ESC leaves, optional seconds\n");
+    print("  VERDANT   "); set_color(COLOR_LIGHT_GREY, COLOR_BLACK); print("Launches Verdant spatial graphical environment (alias: STARTGUI, GUI)\n");
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  GUI [sec] "); set_color(COLOR_LIGHT_GREY, COLOR_BLACK); print("Verdant graphical desktop session; ESC leaves, optional seconds\n");
     set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
     print("  INPUT     "); set_color(COLOR_LIGHT_GREY, COLOR_BLACK); print("Keyboard, mouse, pointer and event queue statistics\n");
     set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
@@ -2455,7 +2469,7 @@ static void cmd_gfx(const char* args) {
     }
     print("Entering graphics mode (self test frames, ESC or any key to leave)...\n");
     /* Let the message reach the serial mirror before the mode switch. */
-    for (volatile int i = 0; i < 2000000; i++) { }
+    timer_delay_ticks(3);
 
     if (graphics_enter_ex(want_w, want_h, want_bpp) != 0) {
         set_color(COLOR_LIGHT_RED, COLOR_BLACK);
@@ -2474,10 +2488,8 @@ static void cmd_gfx(const char* args) {
         print("Holding the surface for ");
         print_uint64((uint64_t)hold);
         print(" second(s)...\n");
-        for (volatile int i = 0; i < 2000000; i++) { }
-        for (uint32_t sec = 0; sec < hold; sec++) {
-            for (volatile int i = 0; i < 2000000 * 20; i++) { }
-        }
+        timer_delay_ticks(3);
+        timer_delay_ticks((uint64_t)hold * timer_get_frequency());
     }
 
     /* Leave graphics mode, then report over the text console. */
@@ -2590,7 +2602,7 @@ static void cmd_gui(const char* args) {
         print("GUI running for ");
         print_uint64((uint64_t)seconds);
         print(" second(s)...\n");
-        for (volatile int i = 0; i < 2000000; i++) { }
+        timer_delay_ticks(3);
     }
 
     int reason = gui_run(seconds);
@@ -2705,7 +2717,8 @@ static void execute_command(void) {
         cmd_gfxinfo();
     } else if (strcasecmp(verb, "GFX") == 0 || strcasecmp(verb, "GRAPHICS") == 0) {
         cmd_gfx(args);
-    } else if (strcasecmp(verb, "GUI") == 0 || strcasecmp(verb, "DESKTOP") == 0) {
+    } else if (strcasecmp(verb, "VERDANT") == 0 || strcasecmp(verb, "STARTGUI") == 0 ||
+               strcasecmp(verb, "GUI") == 0 || strcasecmp(verb, "DESKTOP") == 0) {
         cmd_gui(args);
     } else if (strcasecmp(verb, "INPUT") == 0) {
         cmd_input();

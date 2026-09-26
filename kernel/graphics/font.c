@@ -185,12 +185,15 @@ void draw_char(int x, int y, char c, uint32_t fg, uint32_t bg, int spacing) {
     for (int row = 0; row < FONT_GLYPH_HEIGHT; row++) {
         uint8_t bits = glyph[row];
         for (int col = 0; col < FONT_GLYPH_WIDTH; col++) {
-            uint32_t color = (bits & (0x80 >> col)) ? fg : bg;
-            graphics_put_pixel(x + col, y + row, color);
+            if (bits & (0x80 >> col)) {
+                graphics_put_pixel(x + col, y + row, fg);
+            } else if (bg != FONT_TRANSPARENT) {
+                graphics_put_pixel(x + col, y + row, bg);
+            }
         }
     }
 
-    if (spacing > 0) {
+    if (spacing > 0 && bg != FONT_TRANSPARENT) {
         for (int i = 0; i < spacing; i++) {
             for (int row = 0; row < FONT_GLYPH_HEIGHT; row++) {
                 graphics_put_pixel(x + FONT_GLYPH_WIDTH + i, y + row, bg);

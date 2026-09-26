@@ -522,3 +522,126 @@ void graphics_blit(int x, int y, int w, int h, const uint32_t* pixels, int src_p
         }
     }
 }
+
+static int isqrt(int val) {
+    if (val <= 0) return 0;
+    int x = val;
+    int y = (x + 1) / 2;
+    while (y < x) {
+        x = y;
+        y = (x + val / x) / 2;
+    }
+    return x;
+}
+
+void graphics_draw_rounded_rect(int x, int y, int w, int h, int r, uint32_t color) {
+    if (w <= 0 || h <= 0) return;
+    if (r <= 0) {
+        graphics_draw_rect(x, y, w, h, color);
+        return;
+    }
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+
+    /* Straight horizontal lines */
+    graphics_draw_hline(x + r, y, w - 2 * r, color);
+    graphics_draw_hline(x + r, y + h - 1, w - 2 * r, color);
+
+    /* Straight vertical lines */
+    graphics_draw_vline(x, y + r, h - 2 * r, color);
+    graphics_draw_vline(x + w - 1, y + r, h - 2 * r, color);
+
+    /* Corner arcs */
+    int cx0 = x + r, cy0 = y + r;
+    int cx1 = x + w - 1 - r, cy1 = y + h - 1 - r;
+
+    int cur_x = r, cur_y = 0, err = 1 - r;
+    while (cur_x >= cur_y) {
+        /* Top-Left */
+        graphics_put_pixel(cx0 - cur_x, cy0 - cur_y, color);
+        graphics_put_pixel(cx0 - cur_y, cy0 - cur_x, color);
+        /* Top-Right */
+        graphics_put_pixel(cx1 + cur_x, cy0 - cur_y, color);
+        graphics_put_pixel(cx1 + cur_y, cy0 - cur_x, color);
+        /* Bottom-Left */
+        graphics_put_pixel(cx0 - cur_x, cy1 + cur_y, color);
+        graphics_put_pixel(cx0 - cur_y, cy1 + cur_x, color);
+        /* Bottom-Right */
+        graphics_put_pixel(cx1 + cur_x, cy1 + cur_y, color);
+        graphics_put_pixel(cx1 + cur_y, cy1 + cur_x, color);
+
+        cur_y++;
+        if (err < 0) {
+            err += 2 * cur_y + 1;
+        } else {
+            cur_x--;
+            err += 2 * (cur_y - cur_x) + 1;
+        }
+    }
+}
+
+void graphics_fill_rounded_rect(int x, int y, int w, int h, int r, uint32_t color) {
+    if (w <= 0 || h <= 0) return;
+    if (r <= 0) {
+        graphics_fill_rect(x, y, w, h, color);
+        return;
+    }
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+
+    int r2 = r * r;
+    for (int dy = 0; dy < h; dy++) {
+        int span_dx = 0;
+        if (dy < r) {
+            int d = r - 1 - dy;
+            span_dx = r - isqrt(r2 - d * d);
+        } else if (dy >= h - r) {
+            int d = dy - (h - r);
+            span_dx = r - isqrt(r2 - d * d);
+        }
+        int line_w = w - 2 * span_dx;
+        if (line_w > 0) {
+            graphics_draw_hline(x + span_dx, y + dy, line_w, color);
+        }
+    }
+}
+
+void graphics_fill_rounded_gradient_v(int x, int y, int w, int h, int r, uint32_t top, uint32_t bottom) {
+    if (w <= 0 || h <= 0) return;
+    if (r <= 0) {
+        graphics_fill_gradient_v(x, y, w, h, top, bottom);
+        return;
+    }
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+
+    int r2 = r * r;
+    for (int dy = 0; dy < h; dy++) {
+        int span_dx = 0;
+        if (dy < r) {
+            int d = r - 1 - dy;
+            span_dx = r - isqrt(r2 - d * d);
+        } else if (dy >= h - r) {
+            int d = dy - (h - r);
+            span_dx = r - isqrt(r2 - d * d);
+        }
+        int line_w = w - 2 * span_dx;
+        if (line_w > 0) {
+            uint32_t c = (h == 1) ? top : graphics_blend(top, bottom, (uint32_t)(h - 1 - dy), (uint32_t)(h - 1));
+            graphics_draw_hline(x + span_dx, y + dy, line_w, c);
+        }
+    }
+}
+
+void graphics_fill_glass_panel(int x, int y, int w, int h, int r, uint32_t bg_top, uint32_t bg_bot, uint32_t border_col, uint32_t highlight_col) {
+    if (w <= 0 || h <= 0) return;
+    /* 1. Main glass body gradient */
+    graphics_fill_rounded_gradient_v(x, y, w, h, r, bg_top, bg_bot);
+    /* 2. Top inner specular highlight */
+    if (h > 4 && w > 2 * r) {
+        int hr = (r > 1) ? r - 1 : 0;
+        graphics_draw_hline(x + hr + 1, y + 1, w - 2 * hr - 2, highlight_col);
+    }
+    /* 3. Outer crisp border */
+    graphics_draw_rounded_rect(x, y, w, h, r, border_col);
+}

@@ -4,12 +4,13 @@
 
 export PATH := /home/blu/.local/bin:/home/blu/.local/usr/bin:$(PATH)
 export LD_LIBRARY_PATH := /home/blu/.local/usr/lib:/home/blu/.local/usr/lib64:$(LD_LIBRARY_PATH)
+export QEMU_MODULE_DIR := /home/blu/.local/usr/lib/qemu
 
 CC := gcc
 NASM := nasm
 LD := ld
 GRUB_MKRESCUE := grub-mkrescue
-QEMU := qemu-system-x86_64
+QEMU = /usr/bin/qemu-system-x86_64
 
 CFLAGS := -ffreestanding -m64 -O2 -Wall -Wextra -fno-stack-protector -fno-builtin -mno-red-zone -fno-pie -fno-pic -mcmodel=small -mgeneral-regs-only
 NASMFLAGS := -f elf64
@@ -17,7 +18,7 @@ LDFLAGS := -n -T kernel/linker.ld
 
 GRAPHICS_OBJS := kernel/graphics/framebuffer.o kernel/graphics/vbe.o kernel/graphics/font.o kernel/graphics/graphics.o kernel/graphics/gfx_test.o
 INPUT_OBJS    := kernel/input/input.o kernel/input/kbd.o kernel/input/mouse.o
-GUI_OBJS      := kernel/gui/window.o kernel/gui/wm.o kernel/gui/widget.o kernel/gui/cursor.o kernel/gui/guiterm.o kernel/gui/gui.o
+GUI_OBJS      := kernel/gui/renderer.o kernel/gui/shell.o kernel/gui/morph.o kernel/gui/surface.o kernel/gui/compositor.o kernel/gui/launcher.o kernel/gui/rail.o kernel/gui/berry_surface.o kernel/gui/filebrowser.o kernel/gui/sysmon.o kernel/gui/canvas_surface.o kernel/gui/settings_surface.o kernel/gui/guiterm.o kernel/gui/cursor.o kernel/gui/widget.o kernel/gui/window.o kernel/gui/wm.o kernel/gui/verdant.o kernel/gui/gui.o
 
 KERNEL_OBJS := kernel/boot.o kernel/interrupts.o kernel/gdt.o kernel/pmm.o kernel/vmm.o kernel/heap.o kernel/process.o kernel/syscall.o kernel/elf.o kernel/block.o kernel/ata.o kernel/vfs.o kernel/ramfs.o kernel/fat32.o $(GRAPHICS_OBJS) $(INPUT_OBJS) $(GUI_OBJS) kernel/kernel.o
 BIN := iso/boot/greenhouse.bin
@@ -125,16 +126,21 @@ kernel/gui/%.o: kernel/gui/%.c
 	@echo "[GCC] Compiling $<"
 	$(CC) $(CFLAGS) -c $< -o $@
 
-run: $(ISO)
-	$(QEMU) -boot d -cdrom $(ISO) -hda disk.img -m 256M -vga std -display curses
+qemu: $(ISO) disk.img
+	$(QEMU) -boot d -cdrom $(ISO) -drive file=disk.img,format=raw,index=0,media=disk -m 256M -vga std -display gtk
 
-run-serial: $(ISO)
-	$(QEMU) -boot d -cdrom $(ISO) -hda disk.img -m 256M -vga std -serial stdio -display none
+run: qemu
 
-# Graphics mode needs the standard VGA adapter: the framebuffer driver programs
-# its mode through the Bochs VBE (DISPI) register interface.
-run-gui: $(ISO)
-	$(QEMU) -boot d -cdrom $(ISO) -hda disk.img -m 256M -vga std -display gtk
+run-gui: qemu
+
+run-sdl: $(ISO) disk.img
+	$(QEMU) -boot d -cdrom $(ISO) -drive file=disk.img,format=raw,index=0,media=disk -m 256M -vga std -display sdl
+
+run-curses: $(ISO) disk.img
+	$(QEMU) -boot d -cdrom $(ISO) -drive file=disk.img,format=raw,index=0,media=disk -m 256M -vga std -display curses
+
+run-serial: $(ISO) disk.img
+	$(QEMU) -boot d -cdrom $(ISO) -drive file=disk.img,format=raw,index=0,media=disk -m 256M -vga std -serial stdio -display none
 
 # The tests boot QEMU themselves; the image has to carry the userland binaries
 # for the GFX userland test to run.

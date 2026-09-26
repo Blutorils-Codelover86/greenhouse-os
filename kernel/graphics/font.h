@@ -20,6 +20,7 @@
 
 /* Colour helpers: the framebuffer works with 0x00RRGGBB values. */
 #define FONT_RGB(r, g, b) ((uint32_t)(((r) << 16) | ((g) << 8) | (b)))
+#define FONT_TRANSPARENT  ((uint32_t)0xFFFFFFFF)
 
 void font_init(void);
 int  font_glyph_width(void);
