@@ -1,5 +1,5 @@
 ; ==============================================================================
-; Greenhouse OS 0.7 - 64-bit Bootloader & Multiboot2 Header
+; Greenhouse OS 1.1.0 - 64-bit Bootloader & Multiboot2 Header
 ; ==============================================================================
 default rel
 
@@ -16,6 +16,13 @@ multiboot_header_start:
     dd MB2_ARCH_I386
     dd MB2_HDR_LEN
     dd MB2_CHECKSUM
+
+    ; No framebuffer tag on purpose. Requesting one makes the loader program a
+    ; graphics mode before the kernel runs, which hides the VGA text console
+    ; this OS boots into. The VBE backend programs and describes the mode
+    ; itself, and it re-reads the adapter registers instead of trusting the
+    ; loader, so a boot-time framebuffer tag would only add a way to get the
+    ; wrong geometry.
 
     ; End tag
     align 8

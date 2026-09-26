@@ -1,5 +1,5 @@
 ; ==============================================================================
-; Greenhouse OS 1.0 - Userland C Runtime Startup (crt0.asm)
+; Greenhouse OS 1.1.0 - Userland C Runtime Startup (crt0.asm)
 ; ==============================================================================
 default rel
 bits 64

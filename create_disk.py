@@ -160,7 +160,8 @@ def make_fat32_disk(filename="disk.img", size_mb=64):
         ("LS      ELF", "user/bin/LS.ELF"),
         ("SLEEP   ELF", "user/bin/SLEEP.ELF"),
         ("PS      ELF", "user/bin/PS.ELF"),
-        ("TEST    ELF", "user/bin/TEST.ELF")
+        ("TEST    ELF", "user/bin/TEST.ELF"),
+        ("GFX     ELF", "user/bin/GFX.ELF")
     ]
 
     for name11, filepath in elf_files:

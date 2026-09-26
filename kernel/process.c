@@ -197,15 +197,29 @@ uint64_t process_schedule(interrupt_frame_t* frame) {
 }
 
 void process_yield(void) {
-    __asm__ volatile ("int $0x20"); /* Trigger timer IRQ / scheduler */
+    /* Vector 0xFE is the software scheduling request. It must not be a timer
+     * vector: routing yields through IRQ 0 made the PIT handler advance
+     * kernel_ticks, so every yield fabricated a tick and shortened sleeps. */
+    __asm__ volatile ("int $0xFE");
 }
 
 void process_sleep(uint64_t ticks) {
-    if (!current_proc) return;
     extern uint64_t timer_get_ticks(void);
-    current_proc->sleep_until_tick = timer_get_ticks() + ticks;
-    current_proc->state = PROCESS_SLEEPING;
-    process_yield();
+    if (!current_proc) return;
+
+    uint64_t until = timer_get_ticks() + ticks;
+
+    for (;;) {
+        current_proc->sleep_until_tick = until;
+        current_proc->state = PROCESS_SLEEPING;
+        process_yield();
+
+        /* Only a real PIT tick can move the deadline. If we are resumed before
+         * it, nothing else was runnable, so idle until the next tick instead
+         * of spinning on the scheduler. */
+        if (timer_get_ticks() >= until) return;
+        __asm__ volatile ("hlt");
+    }
 }
 
 void process_exit(int code) {

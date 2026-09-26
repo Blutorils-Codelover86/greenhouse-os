@@ -1,5 +1,5 @@
 ; ==============================================================================
-; Greenhouse OS 0.7 - x86_64 Interrupt Service Routine (ISR) Stubs
+; Greenhouse OS 1.1.0 - x86_64 Interrupt Service Routine (ISR) Stubs
 ; ==============================================================================
 default rel
 bits 64

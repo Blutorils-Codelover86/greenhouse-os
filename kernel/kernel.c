@@ -20,32 +20,31 @@
 #include "process.h"
 #include "syscall.h"
 #include "elf.h"
+#include "irq.h"
+#include "io.h"
+#include "version.h"
+#include "graphics/framebuffer.h"
+#include "graphics/vbe.h"
+#include "graphics/graphics.h"
+#include "graphics/font.h"
+#include "graphics/gfx_test.h"
+#include "input/input.h"
+#include "input/kbd.h"
+#include "input/mouse.h"
+#include "gui/gui.h"
+#include "gui/wm.h"
 
 extern uint8_t _kernel_start[];
 extern uint8_t _kernel_end[];
 
 /* ==============================================================================
  * 1. Low-Level Port I/O and CPU Primitives
+ *
+ * The port primitives and the interrupt primitives now live in io.h / irq.h so
+ * the hardware drivers (keyboard, mouse, video) share one implementation with
+ * the kernel core.  The names below are kept as the kernel's local spelling.
  * ==============================================================================
  */
-
-static inline uint8_t inb(uint16_t port) {
-    uint8_t result;
-    __asm__ volatile ("inb %1, %0" : "=a"(result) : "Nd"(port));
-    return result;
-}
-
-static inline void outb(uint16_t port, uint8_t value) {
-    __asm__ volatile ("outb %0, %1" : : "a"(value), "Nd"(port));
-}
-
-static inline void outw(uint16_t port, uint16_t value) {
-    __asm__ volatile ("outw %0, %1" : : "a"(value), "Nd"(port));
-}
-
-static inline void io_wait(void) {
-    outb(0x80, 0);
-}
 
 static inline void enable_interrupts(void) {
     __asm__ volatile ("sti");
@@ -333,30 +332,9 @@ typedef struct {
     uint64_t base;
 } __attribute__((packed)) IdtPtr;
 
-typedef struct {
-    uint64_t r15;
-    uint64_t r14;
-    uint64_t r13;
-    uint64_t r12;
-    uint64_t r11;
-    uint64_t r10;
-    uint64_t r9;
-    uint64_t r8;
-    uint64_t rbp;
-    uint64_t rdi;
-    uint64_t rsi;
-    uint64_t rdx;
-    uint64_t rcx;
-    uint64_t rbx;
-    uint64_t rax;
-    uint64_t int_no;
-    uint64_t err_code;
-    uint64_t rip;
-    uint64_t cs;
-    uint64_t rflags;
-    uint64_t rsp;
-    uint64_t ss;
-} __attribute__((packed)) InterruptRegisters;
+/* The interrupt frame layout now has a single definition: irq.h publishes it for
+ * the hardware drivers, and the dispatcher here uses the same type. */
+typedef irq_registers_t InterruptRegisters;
 
 #define IDT_ENTRIES 256
 static IdtEntry idt[IDT_ENTRIES];
@@ -365,7 +343,6 @@ static IdtPtr idt_ptr;
 extern void idt_load(IdtPtr* ptr);
 extern uint64_t isr_stub_table[IDT_ENTRIES];
 
-typedef void (*irq_handler_t)(InterruptRegisters* regs);
 static irq_handler_t irq_handlers[16];
 
 static volatile uint64_t int_count_total = 0;
@@ -480,7 +457,19 @@ static void pic_remap(void) {
     outb(PIC2_DATA, 0x01); io_wait();
 
     outb(PIC1_DATA, 0xF8); /* IRQ 0, 1, 2 unmasked */
-    outb(PIC2_DATA, 0xFF);
+    outb(PIC2_DATA, 0xEF); /* IRQ 12 (PS/2 mouse) unmasked, IRQ 2 cascade on */
+}
+
+void pic_set_irq_mask(uint8_t irq, int masked) {
+    if (irq < 8) {
+        uint8_t port = PIC1_DATA;
+        uint8_t bit = (uint8_t)(1u << irq);
+        outb(port, (uint8_t)(masked ? (inb(port) | bit) : (inb(port) & (uint8_t)~bit)));
+    } else if (irq < 16) {
+        uint8_t port = PIC2_DATA;
+        uint8_t bit = (uint8_t)(1u << (irq - 8));
+        outb(port, (uint8_t)(masked ? (inb(port) | bit) : (inb(port) & (uint8_t)~bit)));
+    }
 }
 
 void pic_send_eoi(uint8_t irq) {
@@ -536,6 +525,12 @@ uint64_t interrupt_dispatch(InterruptRegisters* regs) {
         return (uint64_t)regs;
     }
 
+    /* Software scheduling request: INT 0xFE (254). Reschedule without
+     * touching the PIT state so kernel_ticks stays a real time source. */
+    if (regs->int_no == 0xFE) {
+        return process_schedule((interrupt_frame_t*)regs);
+    }
+
     if (regs->int_no >= 32 && regs->int_no < 48) {
         uint8_t irq = (uint8_t)(regs->int_no - 32);
         irq_counters[irq]++;
@@ -583,7 +578,7 @@ uint64_t timer_get_ticks(void) {
     return kernel_ticks;
 }
 
-static uint32_t timer_get_frequency(void) {
+uint32_t timer_get_frequency(void) {
     return timer_frequency;
 }
 
@@ -596,130 +591,32 @@ static uint64_t timer_get_uptime_ms(void) {
 }
 
 /* ==============================================================================
- * 7. PS/2 Keyboard Interrupt Driver (IRQ 1)
+ * 7. Input Subsystem (PS/2 keyboard IRQ 1 + PS/2 mouse IRQ 12)
+ *
+ * The hardware drivers live in kernel/input/.  They translate their device
+ * specific traffic into input events and hand them to the single event queue,
+ * which every consumer (text shell, window manager, userland) reads from.
+ * keyboard_getchar() is kept as the character interface the text shell and
+ * SYS_READ already use, now implemented on top of that queue.
  * ==============================================================================
  */
 
-#define KB_QUEUE_SIZE 256
-static volatile uint8_t kb_queue[KB_QUEUE_SIZE];
-static volatile int kb_head = 0;
-static volatile int kb_tail = 0;
+static int kbd_init_status = -1;
+static int mouse_init_status = -1;
 
-static int shift_pressed = 0;
-static int caps_lock = 0;
+static void input_init_all(void) {
+    input_init();
+    kbd_init();
+    kbd_init_status = 0;
+    mouse_init_status = mouse_init();
 
-static const char scancode_table_lower[128] = {
-    0,   27,  '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
-    '\t','q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
-    0,   'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
-    0,   '\\','z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0,
-    '*', 0,   ' '
-};
-
-static const char scancode_table_upper[128] = {
-    0,   27,  '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '\b',
-    '\t','Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
-    0,   'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
-    0,   '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0,
-    '*', 0,   ' '
-};
-
-#define KEY_SPECIAL_UP    0x81
-#define KEY_SPECIAL_DOWN  0x82
-#define KEY_SPECIAL_LEFT  0x83
-#define KEY_SPECIAL_RIGHT 0x84
-
-static void keyboard_irq_handler(InterruptRegisters* regs) {
-    (void)regs;
-    uint8_t sc = inb(0x60);
-    int next_head = (kb_head + 1) % KB_QUEUE_SIZE;
-    if (next_head != kb_tail) {
-        kb_queue[kb_head] = sc;
-        kb_head = next_head;
-    }
-    pic_send_eoi(1);
-}
-
-static void keyboard_init(void) {
-    kb_head = 0;
-    kb_tail = 0;
-    shift_pressed = 0;
-    caps_lock = 0;
-    irq_install_handler(1, keyboard_irq_handler);
-}
-
-static uint8_t keyboard_pop_scancode(void) {
-    while (kb_head == kb_tail) {
-        __asm__ volatile ("hlt");
-    }
-    uint8_t sc = kb_queue[kb_tail];
-    kb_tail = (kb_tail + 1) % KB_QUEUE_SIZE;
-    return sc;
+    /* Unmask IRQ12 (PS/2 mouse) on the second PIC.  IRQ 2 (cascade) stays
+     * enabled, everything else on the slave stays masked. */
+    pic_set_irq_mask(12, 0);
 }
 
 uint8_t keyboard_getchar(void) {
-    static int extended = 0;
-
-    while (1) {
-        uint8_t sc = keyboard_pop_scancode();
-
-        if (sc == 0xE0) {
-            extended = 1;
-            continue;
-        }
-
-        if (sc & 0x80) {
-            uint8_t released = sc & 0x7F;
-            if (!extended) {
-                if (released == 0x2A || released == 0x36) {
-                    shift_pressed = 0;
-                }
-            }
-            extended = 0;
-            continue;
-        }
-
-        if (extended) {
-            extended = 0;
-            if (sc == 0x48) return KEY_SPECIAL_UP;
-            if (sc == 0x50) return KEY_SPECIAL_DOWN;
-            if (sc == 0x4B) return KEY_SPECIAL_LEFT;
-            if (sc == 0x4D) return KEY_SPECIAL_RIGHT;
-            continue;
-        }
-
-        if (sc == 0x2A || sc == 0x36) {
-            shift_pressed = 1;
-            continue;
-        }
-
-        if (sc == 0x3A) {
-            caps_lock = !caps_lock;
-            continue;
-        }
-
-        if (sc == 0x48) return KEY_SPECIAL_UP;
-        if (sc == 0x50) return KEY_SPECIAL_DOWN;
-
-        if (sc < 128) {
-            char c_low = scancode_table_lower[sc];
-            char c_up  = scancode_table_upper[sc];
-
-            if (c_low >= 'a' && c_low <= 'z') {
-                if (shift_pressed ^ caps_lock) {
-                    return (uint8_t)c_up;
-                } else {
-                    return (uint8_t)c_low;
-                }
-            } else {
-                if (shift_pressed) {
-                    return (uint8_t)c_up;
-                } else {
-                    return (uint8_t)c_low;
-                }
-            }
-        }
-    }
+    return input_getchar();
 }
 
 /* ==============================================================================
@@ -1028,6 +925,14 @@ static void cmd_help(void) {
     print("  SYSTEMINFO"); set_color(COLOR_LIGHT_GREY, COLOR_BLACK); print("Displays detailed system and hardware architecture info\n");
     set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
     print("  BERRY     "); set_color(COLOR_LIGHT_GREY, COLOR_BLACK); print("Berry companion shell commands and friendly tips\n");
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  GFXINFO   "); set_color(COLOR_LIGHT_GREY, COLOR_BLACK); print("Framebuffer, adapter and font information\n");
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  GFX       "); set_color(COLOR_LIGHT_GREY, COLOR_BLACK); print("Graphics self test: gfx [width [height [bpp]] [hold]] draws test frames, returns\n");
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  GUI [sec] "); set_color(COLOR_LIGHT_GREY, COLOR_BLACK); print("Windowed desktop (windows, mouse, terminal); ESC leaves, optional seconds\n");
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  INPUT     "); set_color(COLOR_LIGHT_GREY, COLOR_BLACK); print("Keyboard, mouse, pointer and event queue statistics\n");
     set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
     print("  REBOOT    "); set_color(COLOR_LIGHT_GREY, COLOR_BLACK); print("Restarts computer via keyboard controller (alias: RESTART)\n");
     set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
@@ -2325,6 +2230,428 @@ static void shutdown_system(void) {
     }
 }
 
+/* ==============================================================================
+ * 11b. Graphics, Input and Window Manager Shell Commands
+ *
+ * The text shell stays the entry point: GFX/GUI deliberately leave the text
+ * console, run in graphics mode and return here when the user leaves the GUI
+ * (ESC) or the requested time limit is over, so the console keeps working.
+ * ==============================================================================
+ */
+
+static void cmd_gfxinfo(void) {
+    const framebuffer_info_t* fb = framebuffer_get_info();
+    vbe_adapter_t adapter;
+    vbe_probe(&adapter);
+
+    set_color(COLOR_LIGHT_CYAN, COLOR_BLACK);
+    print("Greenhouse Graphics Subsystem - Framebuffer Report\n");
+    print("-----------------------------------------------\n");
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  Adapter:        ");
+    set_color(COLOR_WHITE, COLOR_BLACK);
+    print_hex64(((uint64_t)adapter.vendor_id << 16) | adapter.device_id);
+    print("  bus ");
+    print_uint64(adapter.bus);
+    print(" dev ");
+    print_uint64(adapter.device);
+    print(" func ");
+    print_uint64(adapter.function);
+    print("\n");
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  VBE registers:  ");
+    set_color(COLOR_WHITE, COLOR_BLACK);
+    print(adapter.dispi ? "present (Bochs VBE / DISPI)" : "not detected");
+    print("\n");
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  BAR0:           ");
+    set_color(COLOR_WHITE, COLOR_BLACK);
+    print_hex64(adapter.bar0);
+    print("  size ");
+    print_uint64(adapter.bar0_size / 1024);
+    print(" KiB");
+    print("\n");
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  Mode source:    ");
+    set_color(COLOR_WHITE, COLOR_BLACK);
+    print(framebuffer_backend_name(fb->backend));
+    print("\n");
+
+    if (fb->backend == FB_BACKEND_NONE) {
+        set_color(COLOR_LIGHT_RED, COLOR_BLACK);
+        print("  No framebuffer described yet - 'gfx' or 'gui' programs one.\n");
+        set_color(COLOR_LIGHT_GREY, COLOR_BLACK);
+        return;
+    }
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  Geometry:       ");
+    set_color(COLOR_WHITE, COLOR_BLACK);
+    print_uint64(fb->width); print(" x "); print_uint64(fb->height);
+    print(" @ ");
+    print_uint64(fb->bpp);
+    print(" bpp\n");
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  Stride:         ");
+    set_color(COLOR_WHITE, COLOR_BLACK);
+    print_uint64(fb->pitch);
+    print(" bytes/line  (");
+    print_uint64(fb->bytes_per_pixel);
+    print(" bytes/pixel)\n");
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  Format:         ");
+    set_color(COLOR_WHITE, COLOR_BLACK);
+    print(framebuffer_format_name(fb->format));
+    print("\n");
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  Channels:       ");
+    set_color(COLOR_WHITE, COLOR_BLACK);
+    print("R off ");
+ print_uint64(fb->red_offset); print(" size "); print_uint64(fb->red_size);
+    print(", G off "); print_uint64(fb->green_offset); print(" size "); print_uint64(fb->green_size);
+    print(", B off "); print_uint64(fb->blue_offset); print(" size "); print_uint64(fb->blue_size);
+    print("\n");
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  Framebuffer:    ");
+    set_color(COLOR_WHITE, COLOR_BLACK);
+    print_hex64(fb->address);
+    print("  (");
+    print_uint64(fb->size / 1024);
+    print(" KiB)\n");
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  Font:           ");
+    set_color(COLOR_WHITE, COLOR_BLACK);
+    print_uint64((uint64_t)font_glyph_width()); print("x");
+    print_uint64((uint64_t)font_glyph_height());
+    print(" bitmap, ");
+    print_uint64(FONT_LAST_CHAR - FONT_FIRST_CHAR + 1);
+    print(" glyphs\n");
+}
+
+static void cmd_input(void) {
+    input_stats_t st;
+    input_get_stats(&st);
+
+    set_color(COLOR_LIGHT_CYAN, COLOR_BLACK);
+    print("Greenhouse Input Subsystem\n");
+    print("-------------------------\n");
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  Keyboard:       ");
+    set_color(COLOR_WHITE, COLOR_BLACK);
+    print("scancodes ");
+    print_uint64(kbd_get_scancode_count());
+    print(", overruns ");
+    print_uint64(kbd_get_overrun_count());
+    print(", shift ");
+    print(kbd_is_shift_down() ? "on" : "off");
+    print(", caps ");
+    print(kbd_is_caps_lock() ? "on" : "off");
+    print("\n");
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  Mouse:          ");
+    set_color(COLOR_WHITE, COLOR_BLACK);
+    print(mouse_get_name());
+    if (mouse_init_status != 0) {
+        print(" (init failed, rc ");
+        print_uint64((uint64_t)(int64_t)mouse_init_status);
+        print(")");
+    }
+    print(", packets ");
+    print_uint64(mouse_get_packet_count());
+    print(", dropped ");
+    print_uint64(mouse_get_dropped_count());
+    print(", wheel ");
+    print_uint64(mouse_get_wheel_count());
+    print("\n");
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  Events:         ");
+    set_color(COLOR_WHITE, COLOR_BLACK);
+    print("posted ");
+    print_uint64(st.posted);
+    print(", delivered ");
+    print_uint64(st.delivered);
+    print(", dropped ");
+    print_uint64(st.dropped);
+    print("\n");
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  Key events:     ");
+    set_color(COLOR_WHITE, COLOR_BLACK);
+    print("down ");
+    print_uint64(st.key_down);
+    print(", up ");
+    print_uint64(st.key_up);
+    print("\n");
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  Pointer:        ");
+    set_color(COLOR_WHITE, COLOR_BLACK);
+    print_uint64(st.pointer_x);
+    print(", ");
+    print_uint64(st.pointer_y);
+    print("  buttons ");
+    print_uint64(input_get_buttons());
+    print("\n");
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  Queue:          ");
+    set_color(COLOR_WHITE, COLOR_BLACK);
+    print_uint64(INPUT_QUEUE_SIZE);
+    print(" slots, ");
+    print_uint64(st.posted - st.delivered);
+    print(" pending\n");
+}
+
+/* Parse "gfx [width [height [bpp]] [hold]]".  A missing or zero field keeps the
+ * driver default for that part of the mode.  `hold` is the number of seconds to
+ * leave the finished test frame on screen before the console comes back, which
+ * is what makes a screendump of a shallow pixel format possible. */
+static void cmd_gfx(const char* args) {
+    uint32_t want_w = 0, want_h = 0, want_bpp = 0, hold = 0;
+    if (args && args[0]) {
+        uint32_t* fields[4] = { &want_w, &want_h, &want_bpp, &hold };
+        for (int f = 0; f < 4; f++) {
+            while (*args == ' ') args++;
+            uint32_t v = 0;
+            int digits = 0;
+            while (*args >= '0' && *args <= '9') {
+                v = v * 10 + (uint32_t)(*args - '0');
+                args++;
+                digits++;
+            }
+            if (digits == 0) break;
+            *fields[f] = v;
+        }
+    }
+
+    if (!framebuffer_adapter_present() && framebuffer_get_info()->backend == FB_BACKEND_NONE) {
+        set_color(COLOR_LIGHT_RED, COLOR_BLACK);
+        print("No display adapter found - cannot enter graphics mode.\n");
+        set_color(COLOR_LIGHT_GREY, COLOR_BLACK);
+        return;
+    }
+
+    set_color(COLOR_LIGHT_CYAN, COLOR_BLACK);
+    if (want_w || want_h || want_bpp) {
+        print("Requesting mode ");
+        print_uint64((uint64_t)(want_w ? want_w : VBE_PREFERRED_WIDTH));
+        print(" x ");
+        print_uint64((uint64_t)(want_h ? want_h : VBE_PREFERRED_HEIGHT));
+        print(" @ ");
+        print_uint64((uint64_t)(want_bpp ? want_bpp : VBE_PREFERRED_BPP));
+        print(" bpp\n");
+    }
+    print("Entering graphics mode (self test frames, ESC or any key to leave)...\n");
+    /* Let the message reach the serial mirror before the mode switch. */
+    for (volatile int i = 0; i < 2000000; i++) { }
+
+    if (graphics_enter_ex(want_w, want_h, want_bpp) != 0) {
+        set_color(COLOR_LIGHT_RED, COLOR_BLACK);
+        print("Graphics mode request failed - the adapter refused the mode.\n");
+        set_color(COLOR_LIGHT_GREY, COLOR_BLACK);
+        return;
+    }
+
+    gfx_test_result_t result;
+    gfx_test_run_all(&result);
+
+    if (hold > 0) {
+        /* Keep the mode up with the last test frame on screen so it can be
+         * looked at, or captured, before the text console returns. */
+        set_color(COLOR_LIGHT_CYAN, COLOR_BLACK);
+        print("Holding the surface for ");
+        print_uint64((uint64_t)hold);
+        print(" second(s)...\n");
+        for (volatile int i = 0; i < 2000000; i++) { }
+        for (uint32_t sec = 0; sec < hold; sec++) {
+            for (volatile int i = 0; i < 2000000 * 20; i++) { }
+        }
+    }
+
+    /* Leave graphics mode, then report over the text console. */
+    graphics_leave();
+    framebuffer_text_diff_t text_diff;
+    int text_diff_total = framebuffer_verify_text_state_ex(&text_diff);
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("\nGraphics self test complete.\n");
+    set_color(COLOR_LIGHT_GREY, COLOR_BLACK);
+    print("  Surface:        ");
+    print_uint64((uint64_t)result.width);
+    print(" x ");
+    print_uint64((uint64_t)result.height);
+    print(" @ ");
+    print_uint64((uint64_t)result.bpp);
+    print(" bpp\n");
+    print("  Back buffer:    ");
+    print(result.back_buffer ? "allocated" : "none (direct rendering)");
+    print("\n");
+    print("  Frames drawn:   ");
+    print_uint64((uint64_t)result.frames_drawn);
+    print("\n");
+    print("  Pixel checks:   ");
+    print_uint64((uint64_t)result.checks);
+    print("  failures ");
+    print_uint64((uint64_t)result.failures);
+    print("\n  Present checks: ");
+    print_uint64((uint64_t)result.present_checks);
+    print("  failures ");
+    print_uint64((uint64_t)result.present_failures);
+    if (result.fail_x >= 0) {
+        print("\n  First failure:  (");
+        print_uint64((uint64_t)result.fail_x);
+        print(", ");
+        print_uint64((uint64_t)result.fail_y);
+        print(") got 0x");
+        print_hex64(result.fail_got);
+        print(" want 0x");
+        print_hex64(result.fail_expected);
+    }
+    print("\n");
+
+    print("  Text mode:      ");
+    if (text_diff_total == 0) {
+        print("restored (VGA registers match the boot state)");
+    } else if (text_diff_total > 0) {
+        print_uint64((uint64_t)text_diff_total);
+        print(" registers differ (seq ");
+        print_uint64((uint64_t)text_diff.seq_diff);
+        print(" crtc ");
+        print_uint64((uint64_t)text_diff.crtc_diff);
+        print(" gctl ");
+        print_uint64((uint64_t)text_diff.gctl_diff);
+        print(" attr ");
+        print_uint64((uint64_t)text_diff.attr_diff);
+        print(")");
+        if (text_diff.first_crtc >= 0) {
+            print("\n                   first crtc[");
+            print_uint64((uint64_t)text_diff.first_crtc);
+            print("] now 0x");
+            print_hex64(text_diff.first_crtc_now);
+            print(" want 0x");
+            print_hex64(text_diff.first_crtc_want);
+        }
+        if (text_diff.first_attr >= 0) {
+            print("  attr[");
+            print_uint64((uint64_t)text_diff.first_attr);
+            print("] now 0x");
+            print_hex64(text_diff.first_attr_now);
+            print(" want 0x");
+            print_hex64(text_diff.first_attr_want);
+        }
+    } else {
+        print("no snapshot taken");
+    }
+    print("\n");
+
+    /* A restored text mode is part of the test: coming back from graphics has
+     * to leave the adapter exactly as it was found, otherwise the shell would
+     * keep running on an unusable screen. */
+    if (result.failures == 0 && result.present_failures == 0 && text_diff_total == 0) {
+        set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+        print("  Result:         PASS\n");
+    } else {
+        set_color(COLOR_LIGHT_RED, COLOR_BLACK);
+        print("  Result:         FAIL\n");
+    }
+    set_color(COLOR_LIGHT_GREY, COLOR_BLACK);
+}
+
+static void cmd_gui(const char* args) {
+    int seconds = 0;
+    if (args && args[0]) {
+        seconds = 0;
+        for (const char* p = args; *p >= '0' && *p <= '9'; p++) {
+            seconds = seconds * 10 + (*p - '0');
+        }
+    }
+
+    if (gui_enter() != 0) {
+        set_color(COLOR_LIGHT_RED, COLOR_BLACK);
+        print("Could not enter graphics mode - the adapter refused the mode.\n");
+        set_color(COLOR_LIGHT_GREY, COLOR_BLACK);
+        return;
+    }
+
+    if (seconds > 0) {
+        set_color(COLOR_LIGHT_CYAN, COLOR_BLACK);
+        print("GUI running for ");
+        print_uint64((uint64_t)seconds);
+        print(" second(s)...\n");
+        for (volatile int i = 0; i < 2000000; i++) { }
+    }
+
+    int reason = gui_run(seconds);
+
+    gui_report_t report;
+    gui_get_report(&report);
+    gui_leave();
+
+    set_color(COLOR_LIGHT_CYAN, COLOR_BLACK);
+    print("\nGUI session finished (");
+    if (reason == GUI_EXIT_ESC) print("ESC pressed");
+    else if (reason == GUI_EXIT_TIMEOUT) print("time limit reached");
+    else if (reason == GUI_EXIT_CLOSED) print("window closed");
+    else print("error");
+    print(").\n");
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  Surface:        ");
+    set_color(COLOR_WHITE, COLOR_BLACK);
+    print_uint64((uint64_t)report.width);
+    print(" x ");
+    print_uint64((uint64_t)report.height);
+    print(" @ ");
+    print_uint64((uint64_t)report.bpp);
+    print(" bpp (");
+    print(report.backend_multiboot ? "multiboot2" : "legacy vbe");
+    print(")\n");
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  Back buffer:    ");
+    set_color(COLOR_WHITE, COLOR_BLACK);
+    if (report.back_buffer) {
+        print("allocated, ");
+        print_uint64(report.back_buffer_size / 1024);
+        print(" KiB\n");
+    } else {
+        print("none (direct rendering)");
+        int bb_err = graphics_get_back_buffer_error();
+        if (bb_err != 0) {
+            print(" - reason ");
+            print_uint64((uint64_t)(-(int64_t)bb_err));
+        }
+        print("\n");
+    }
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  Frames:         ");
+    set_color(COLOR_WHITE, COLOR_BLACK);
+    print_uint64((uint64_t)report.frames);
+    print(" composed, ");
+    print_uint64((uint64_t)report.presents);
+    print(" presented\n");
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("  Events:         ");
+    set_color(COLOR_WHITE, COLOR_BLACK);
+    print_uint64((uint64_t)report.events_processed);
+    print(" processed by the window manager\n");
+    set_color(COLOR_LIGHT_GREY, COLOR_BLACK);
+}
+
 static void execute_command(void) {
     print("\n");
 
@@ -2374,6 +2701,14 @@ static void execute_command(void) {
         cmd_test();
     } else if (strcasecmp(verb, "TIME") == 0 || strcasecmp(verb, "DATE") == 0) {
         cmd_time();
+    } else if (strcasecmp(verb, "GFXINFO") == 0 || strcasecmp(verb, "FBINFO") == 0) {
+        cmd_gfxinfo();
+    } else if (strcasecmp(verb, "GFX") == 0 || strcasecmp(verb, "GRAPHICS") == 0) {
+        cmd_gfx(args);
+    } else if (strcasecmp(verb, "GUI") == 0 || strcasecmp(verb, "DESKTOP") == 0) {
+        cmd_gui(args);
+    } else if (strcasecmp(verb, "INPUT") == 0) {
+        cmd_input();
     } else if (strcasecmp(verb, "TICKS") == 0 || strcasecmp(verb, "UPTIME") == 0) {
         cmd_ticks();
     } else if (strcasecmp(verb, "CPU") == 0 || strcasecmp(verb, "CPUID") == 0) {
@@ -2449,7 +2784,7 @@ void kernel_main(uint32_t mb2_magic, uint64_t mb2_info_addr) {
     idt_init();
     pic_remap();
     pit_init(100);
-    keyboard_init();
+    input_init_all();
     cpu_detect();
     enable_interrupts();
 
@@ -2463,6 +2798,22 @@ void kernel_main(uint32_t mb2_magic, uint64_t mb2_info_addr) {
     /* 3. Phase 4 & 5: Process Scheduler & Syscall Subsystems */
     process_init();
     syscall_init();
+
+    /* Phase 6: probe the framebuffer and the graphics subsystems.  The display
+     * stays in the VGA text mode here; graphics is entered on request. */
+    framebuffer_init((uint32_t)mb2_magic, (uint64_t)mb2_info_addr);
+    graphics_init();
+    gui_init();
+    if (framebuffer_adapter_present()) {
+        const framebuffer_info_t* fb = framebuffer_get_info();
+        if (fb->backend != FB_BACKEND_NONE) {
+            print("[GFX] ");
+            print_uint64(fb->width); print("x"); print_uint64(fb->height);
+            print(" framebuffer available (");
+            print(framebuffer_backend_name(fb->backend));
+            print(")\n");
+        }
+    }
 
     /* 4. Phase 3: Real Storage & Filesystem Subsystem */
     vfs_init();
@@ -2495,7 +2846,8 @@ void kernel_main(uint32_t mb2_magic, uint64_t mb2_info_addr) {
 
     set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
     print("===============================================================================\n");
-    print("               GREENHOUSE OS  --  VERSION 1.0 (PROCESS + USERLAND)             \n");
+    print("               GREENHOUSE OS  --  VERSION " GREENHOUSE_VERSION_STRING
+          " (PROCESS + USERLAND)             \n");
     print("===============================================================================\n");
 
     set_color(COLOR_LIGHT_CYAN, COLOR_BLACK);
@@ -2512,12 +2864,18 @@ void kernel_main(uint32_t mb2_magic, uint64_t mb2_info_addr) {
         print("  [OK] In-memory RAMFS mounted at C:\\.\n");
     }
 
+    if (framebuffer_get_info()->backend != FB_BACKEND_NONE) {
+        set_color(COLOR_LIGHT_CYAN, COLOR_BLACK);
+        print("  [OK] Graphics Subsystem (framebuffer, 2D compositor, 8x16 bitmap font) ready.\n");
+        print("  [OK] Input Subsystem (PS/2 keyboard + mouse, event queue, software cursor).\n");
+    }
+
     set_color(COLOR_LIGHT_MAGENTA, COLOR_BLACK);
     print("\n  Berry: ");
     set_color(COLOR_WHITE, COLOR_BLACK);
-    print("Welcome to Greenhouse OS 1.0! Preemptive multitasking & userland active.\n");
+    print("Welcome to " GREENHOUSE_VERSION_STRING "! Preemptive multitasking & userland active.\n");
     set_color(COLOR_LIGHT_GREY, COLOR_BLACK);
-    print("         Type 'help' for commands, 'ps' for tasks, or 'run <prog.elf>'.\n\n");
+    print("         Type 'help' for commands, 'gfx' for the graphics test, 'gui' for the desktop.\n\n");
 
     /* Show prompt */
     show_prompt();
@@ -2528,12 +2886,12 @@ void kernel_main(uint32_t mb2_magic, uint64_t mb2_info_addr) {
 
         if (c == 0) continue;
 
-        if (c == KEY_SPECIAL_UP) {
+        if (c == INPUT_KEY_UP) {
             history_handle_up();
             continue;
         }
 
-        if (c == KEY_SPECIAL_DOWN) {
+        if (c == INPUT_KEY_DOWN) {
             history_handle_down();
             continue;
         }

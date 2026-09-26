@@ -2,6 +2,10 @@
 #include "process.h"
 #include "vfs.h"
 #include "heap.h"
+#include "graphics/graphics.h"
+#include "graphics/framebuffer.h"
+#include "graphics/font.h"
+#include "input/input.h"
 
 extern void put_char(char c);
 extern uint8_t keyboard_getchar(void);
@@ -39,7 +43,7 @@ int64_t syscall_dispatch(interrupt_frame_t* frame) {
     uint64_t a2 = frame->rsi;
     uint64_t a3 = frame->rdx;
     uint64_t a4 = frame->r10; /* System V uses R10 for 4th syscall arg */
-    (void)a4;
+    uint64_t a5 = frame->r8;  /* and R8 for the 5th */
 
     switch (sys_no) {
         case SYS_EXIT: {
@@ -270,6 +274,113 @@ int64_t syscall_dispatch(interrupt_frame_t* frame) {
             udt->minute = kdt.minute;
             udt->second = kdt.second;
             return 0;
+        }
+
+        case SYS_GFX_ENTER: {
+            if (graphics_is_active()) return 0;
+            return graphics_enter();
+        }
+
+        case SYS_GFX_LEAVE: {
+            if (!graphics_is_active()) return 0;
+            return graphics_leave();
+        }
+
+        case SYS_GFX_INFO: {
+            user_gfx_info_t* info = (user_gfx_info_t*)a1;
+            if (cur->is_user && !s_validate_user_ptr(info, sizeof(user_gfx_info_t))) return -1;
+
+            const framebuffer_info_t* fb = framebuffer_get_info();
+            if (!fb) return -1;
+
+            info->width = fb->width;
+            info->height = fb->height;
+            info->pitch = fb->pitch;
+            info->bpp = fb->bpp;
+            info->red_offset = fb->red_offset;
+            info->red_size = fb->red_size;
+            info->green_offset = fb->green_offset;
+            info->green_size = fb->green_size;
+            info->blue_offset = fb->blue_offset;
+            info->blue_size = fb->blue_size;
+            info->back_buffer = 0; /* user space never maps the surface itself */
+            info->has_back_buffer = (uint32_t)graphics_has_back_buffer();
+            return graphics_is_active() ? 0 : -1;
+        }
+
+        /* Every drawing call needs a live surface.  Refusing loudly beats
+         * scribbling into a memory map that is not there. */
+        case SYS_GFX_CLEAR:
+        case SYS_GFX_RECT:
+        case SYS_GFX_LINE:
+        case SYS_GFX_TEXT:
+        case SYS_GFX_PRESENT: {
+            if (!graphics_is_active()) return -1;
+
+            switch (sys_no) {
+            case SYS_GFX_CLEAR:
+                graphics_clear((uint32_t)a1);
+                return 0;
+
+            case SYS_GFX_RECT: {
+                int x = (int)(int64_t)a1, y = (int)(int64_t)a2;
+                int w = (int)(int64_t)a3, h = (int)(int64_t)a4;
+                if (w <= 0 || h <= 0) return 0;
+                graphics_fill_rect(x, y, w, h, (uint32_t)a5);
+                return 0;
+            }
+
+            case SYS_GFX_LINE: {
+                int x0 = (int)(int64_t)a1, y0 = (int)(int64_t)a2;
+                int x1 = (int)(int64_t)a3, y1 = (int)(int64_t)a4;
+                graphics_draw_line(x0, y0, x1, y1, (uint32_t)a5);
+                return 0;
+            }
+
+            case SYS_GFX_TEXT: {
+                const char* text = (const char*)a3;
+                if (cur->is_user) {
+                    if (!s_validate_user_ptr(text, 1)) return -1;
+                    /* Bounded scan: a string that is not terminated inside a
+                     * sane window must not walk the whole address space. */
+                    size_t len = 0;
+                    while (len < 256 && text[len] != '\0') {
+                        if (!s_validate_user_ptr(text + len, 1)) return -1;
+                        len++;
+                    }
+                }
+                draw_text((int)(int64_t)a1, (int)(int64_t)a2, text,
+                          (uint32_t)a4, (uint32_t)a5, 1);
+                return 0;
+            }
+
+            case SYS_GFX_PRESENT:
+            default:
+                graphics_present();
+                return 0;
+            }
+        }
+
+        case SYS_INPUT_POLL: {
+            user_input_event_t* uev = (user_input_event_t*)a1;
+            if (cur->is_user && !s_validate_user_ptr(uev, sizeof(user_input_event_t))) return -1;
+
+            input_event_t kev;
+            int got = input_poll_event(&kev);
+            if (!got) return 0;
+
+            uev->type = (uint32_t)kev.type;
+            uev->scancode = kev.scancode;
+            uev->ascii = kev.ascii;
+            uev->extended = kev.extended;
+            uev->modifiers = kev.modifiers;
+            uev->buttons = kev.buttons;
+            uev->x = kev.x;
+            uev->y = kev.y;
+            uev->dx = kev.dx;
+            uev->dy = kev.dy;
+            uev->timestamp = kev.timestamp;
+            return 1;
         }
 
         default:
