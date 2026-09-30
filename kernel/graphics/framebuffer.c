@@ -264,15 +264,22 @@ void framebuffer_init(uint32_t mb2_magic, uint64_t mb2_info_addr) {
         fb_info.adapter_function = adapter.function;
         fb_info.adapter_dispi = adapter.dispi;
     }
+
+    /* Backup the BIOS text mode font before any graphics mode touches Plane 2 */
+    vbe_backup_font();
 }
 
 int framebuffer_enter_mode_ex(uint32_t width, uint32_t height, uint32_t bpp) {
     if (fb_info.mode_active) return 0;
 
+    /* Ensure BIOS font is backed up */
+    vbe_backup_font();
+
     /* Snapshot the current (text) register file before anything is reprogrammed
      * and before the linear framebuffer is enabled. */
     vbe_save_text_state(&fb_text_state);
     fb_text_state_valid = 1;
+
 
     if (fb_info.backend == FB_BACKEND_NONE || fb_info.address == 0) {
         /* Fall back to a driver policy mode on the emulated adapter and use
@@ -379,6 +386,9 @@ static uint32_t fb_text_geometry_height(const vga_text_state_t* st) {
 int framebuffer_leave_mode(void) {
     if (!fb_info.mode_active) return 0;
 
+    /* Restore Plane 2 font while BAR0 is still accessible */
+    vbe_restore_font(fb_info.address);
+
     if (fb_text_state_valid) {
         vbe_restore_text_state(&fb_text_state);
     } else {
@@ -386,12 +396,24 @@ int framebuffer_leave_mode(void) {
          * fall back to programming the classic 80x25 register table. */
         vbe_restore_text_mode();
     }
+
+    /* Restore Plane 2 font through standard VGA registers */
+    vbe_restore_font(0);
+
+    /* Wipe VGA text memory (0xB8000) so no GUI pixel residue appears */
+    volatile uint16_t* vga_text = (volatile uint16_t*)0xB8000;
+    uint16_t blank = (0x07 << 8) | ' ';
+    for (int i = 0; i < 80 * 25; i++) {
+        vga_text[i] = blank;
+    }
+
     input_set_pointer_bounds((int)fb_text_geometry_width(&fb_text_state),
                              (int)fb_text_geometry_height(&fb_text_state));
     fb_info.mode_active = 0;
     fb_ready = 0;
     return 0;
 }
+
 
 int framebuffer_verify_text_state_ex(framebuffer_text_diff_t* out) {
     /* Compares the live VGA register file against the snapshot taken before the

@@ -45,5 +45,6 @@ void guiterm_clear(guiterm_t* t);
 void guiterm_handle_event(guiterm_t* t, const input_event_t* ev);
 void guiterm_draw(guiterm_t* t, int cx, int cy, int cw, int ch);
 void guiterm_execute(guiterm_t* t, const char* line);
+int  guiterm_run_elf(guiterm_t* t, const char* filepath);
 
 #endif /* GUITERM_H */

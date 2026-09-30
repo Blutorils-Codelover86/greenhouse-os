@@ -36,6 +36,9 @@
 #define KBD_SCAN_RIGHT        0x4D
 #define KBD_SCAN_DOWN         0x50
 #define KBD_SCAN_DELETE       0x53
+#define KBD_SCAN_LGUI         0x5B   /* Left Windows / Super key (Seed Key) */
+#define KBD_SCAN_RGUI         0x5C   /* Right Windows / Super key (Seed Key) */
+#define KBD_SCAN_SEED         0x5B   /* Greenhouse Seed Key */
 
 /* Legacy codes returned by input_getchar() for the text shell */
 #define INPUT_KEY_UP          0x81
@@ -47,12 +50,15 @@
 #define INPUT_KEY_BACKSPACE   0x08
 #define INPUT_KEY_TAB         0x09
 #define INPUT_KEY_DELETE      0x87
+#define INPUT_KEY_SEED        0x88   /* Greenhouse Seed Key */
 
 /* Modifier bits reported with every event */
 #define INPUT_MOD_SHIFT       0x0001
 #define INPUT_MOD_CTRL        0x0002
 #define INPUT_MOD_ALT         0x0004
 #define INPUT_MOD_CAPS        0x0008
+#define INPUT_MOD_SEED        0x0010 /* Seed / Windows / Super Modifier */
+#define INPUT_MOD_GUI         INPUT_MOD_SEED
 
 /* Mouse buttons */
 #define INPUT_MOUSE_LEFT      0x01

@@ -1,5 +1,5 @@
 /* ==============================================================================
- * Greenhouse OS - VERDANT Radial Launcher
+ * Greenhouse OS - Light Card Launcher
  * ==============================================================================
  */
 
@@ -26,10 +26,6 @@ typedef struct {
     const char* tag;
     const char* desc;
     uint32_t    accent;
-    int         rel_x;          /* center-relative orbital offset */
-    int         rel_y;
-    int         w;
-    int         h;
 } launcher_node_t;
 
 void launcher_init(void);

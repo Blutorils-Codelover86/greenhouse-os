@@ -82,4 +82,8 @@ typedef struct {
 void syscall_init(void);
 int64_t syscall_dispatch(interrupt_frame_t* frame);
 
+typedef void (*syscall_write_hook_t)(const char* buf, size_t count);
+void syscall_set_write_hook(syscall_write_hook_t hook);
+syscall_write_hook_t syscall_get_write_hook(void);
+
 #endif /* SYSCALL_H */

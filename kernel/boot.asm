@@ -123,7 +123,7 @@ setup_page_tables:
     or eax, 0x03
     mov [pdpt_table], eax
 
-    ; Map 512 x 2MB entries in PD table (Total 1GB)
+    ; Map 512 x 2MB entries in PD table (Total 1GB: 0x00000000 to 0x3FFFFFFF)
     mov ecx, 0
 .map_pd:
     mov eax, 0x200000       ; 2MB

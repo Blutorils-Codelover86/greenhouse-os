@@ -23,7 +23,7 @@ def run_tests():
             '-boot', 'd',
             '-cdrom', 'greenhouse.iso',
             '-hda', 'disk.img',
-            '-m', '256M',
+            '-m', '1G',
             '-display', 'none',
             '-monitor', 'stdio',
             '-serial', f'file:{serial_log}'

@@ -61,6 +61,7 @@ int        verdant_set_bounds(surface_id_t id, int x, int y, int w, int h);
 void       verdant_arrange_spatial(void);
 
 int verdant_open_terminal(void);
+int verdant_open_terminal_run(const char* filepath);
 int verdant_open_files(void);
 int verdant_open_sysmon(void);
 int verdant_open_berry(void);

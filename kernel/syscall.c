@@ -28,6 +28,16 @@ static int s_validate_user_ptr(const void* ptr, size_t size) {
     return 1;
 }
 
+static syscall_write_hook_t s_write_hook = NULL;
+
+void syscall_set_write_hook(syscall_write_hook_t hook) {
+    s_write_hook = hook;
+}
+
+syscall_write_hook_t syscall_get_write_hook(void) {
+    return s_write_hook;
+}
+
 void syscall_init(void) {
     /* Syscall interface initialized */
 }
@@ -63,6 +73,9 @@ int64_t syscall_dispatch(interrupt_frame_t* frame) {
 
             if (fd == 1 || fd == 2) {
                 /* stdout / stderr */
+                if (s_write_hook) {
+                    s_write_hook(buf, count);
+                }
                 for (size_t i = 0; i < count; i++) {
                     put_char(buf[i]);
                 }

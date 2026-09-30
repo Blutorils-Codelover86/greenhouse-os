@@ -10,11 +10,11 @@
 #define KERNEL_VERSION_H
 
 #define GREENHOUSE_VERSION_MAJOR 1
-#define GREENHOUSE_VERSION_MINOR 1
+#define GREENHOUSE_VERSION_MINOR 2
 #define GREENHOUSE_VERSION_PATCH 0
 
-#define GREENHOUSE_VERSION_STRING "1.1.0"
-#define GREENHOUSE_BUILD_TYPE     "Graphics + Input Foundation"
-#define GREENHOUSE_VERSION_LINE   "Greenhouse OS 1.1.0 (Graphics + Input Foundation)"
+#define GREENHOUSE_VERSION_STRING "1.2.0"
+#define GREENHOUSE_BUILD_TYPE     "Light Graphical Environment"
+#define GREENHOUSE_VERSION_LINE   "Greenhouse OS 1.2.0 (Light Graphical Environment)"
 
 #endif /* KERNEL_VERSION_H */

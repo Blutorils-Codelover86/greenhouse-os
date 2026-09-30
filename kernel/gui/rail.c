@@ -1,15 +1,44 @@
 /* ==============================================================================
- * Greenhouse OS - VERDANT System Rail (implementation)
+ * Greenhouse OS - Light System Rail (implementation)
  * ==============================================================================
  */
 
 #include "rail.h"
+#include "morph.h"
+#include "gh_theme.h"
 #include "../graphics/graphics.h"
 #include "../graphics/font.h"
 #include "../pmm.h"
 #include "../irq.h"
 
+extern uint64_t timer_get_ticks(void);
+extern uint32_t timer_get_frequency(void);
+
+static int g_rail_target_y = 4;
+static int g_rail_current_y = 4;
+static int g_rail_locked = 1;
+
 void rail_init(void) {
+    g_rail_target_y = 4;
+    g_rail_current_y = 4;
+    g_rail_locked = 1;
+}
+
+void rail_request_emerge(void) {
+    g_rail_target_y = 4;
+}
+
+void rail_toggle_locked(void) {
+    g_rail_locked = !g_rail_locked;
+    if (!g_rail_locked) {
+        g_rail_target_y = -22;
+    } else {
+        g_rail_target_y = 4;
+    }
+}
+
+int rail_is_emerged(void) {
+    return (g_rail_current_y >= 0);
 }
 
 static void rail_put_uint(char* buf, int* n, int cap, uint64_t v) {
@@ -22,24 +51,39 @@ static void rail_put_uint(char* buf, int* n, int cap, uint64_t v) {
 
 void rail_draw(int sw, int sh, surface_t* surfaces, int count, int focused_id) {
     (void)sh;
+    if (g_rail_current_y != g_rail_target_y) {
+        g_rail_current_y = morph_step_ease(g_rail_current_y, g_rail_target_y, 4, 2);
+    }
+
     int rx = 8;
-    int ry = 4;
+    int ry = g_rail_current_y;
     int rw = sw - 16;
     int rh = 28;
 
-    /* 1. Main Glass Rail Body */
-    graphics_fill_glass_panel(rx, ry, rw, rh, 6, 0xFF0F1C2E, 0xFF08101A, 0xFF1E3550, 0xFF38BDF8);
+    /* If collapsed, show subtle emergence strip at top */
+    if (ry < 0) {
+        graphics_fill_rounded_rect((sw - 120) / 2, 0, 120, 6, 3, GH_COLOR_GREEN_LEAF);
+        return;
+    }
+
+    /* 1. Main Rail Card Panel */
+    renderer_draw_card_panel(rx, ry, rw, rh, GH_RADIUS_MD,
+                             GH_COLOR_SURFACE, 250, GH_COLOR_BORDER_LIGHT, 2);
 
     /* 2. Left Buttons */
     /* [ Berry ] Button */
-    graphics_fill_rounded_rect(rx + 6, ry + 3, 84, 22, 4, 0xFF1F1122);
-    graphics_draw_rounded_rect(rx + 6, ry + 3, 84, 22, 4, 0xFFF43F5E);
-    draw_text(rx + 12, ry + 6, "[*] Berry", 0xFFFB7185, FONT_TRANSPARENT, 0);
+    int berry_x = rx + 6;
+    int berry_w = 84;
+    int berry_h = 22;
+    renderer_draw_button_styled(berry_x, ry + 3, berry_w, berry_h, "[Berry]",
+                                RENDERER_BTN_OUTLINE, 0, 0);
 
     /* [ Apps ] Button */
-    graphics_fill_rounded_rect(rx + 96, ry + 3, 76, 22, 4, 0xFF0B251F);
-    graphics_draw_rounded_rect(rx + 96, ry + 3, 76, 22, 4, 0xFF10B981);
-    draw_text(rx + 102, ry + 6, "[+] Apps", 0xFF6EE7B7, FONT_TRANSPARENT, 0);
+    int apps_x = rx + 96;
+    int apps_w = 76;
+    int apps_h = 22;
+    renderer_draw_button_styled(apps_x, ry + 3, apps_w, apps_h, "[Apps]",
+                                RENDERER_BTN_OUTLINE, 0, 0);
 
     /* 3. Middle Surface Switcher Tabs */
     int tab_x = rx + 182;
@@ -48,23 +92,38 @@ void rail_draw(int sw, int sh, surface_t* surfaces, int count, int focused_id) {
         if (!s->visible && !s->is_minimized) continue;
 
         int is_focus = (s->id == (uint32_t)focused_id);
-        uint32_t tab_bg = is_focus ? 0xFF162E25 : (s->is_minimized ? 0xFF0D1420 : 0xFF121E30);
-        uint32_t tab_border = is_focus ? s->accent : 0xFF1E3A5F;
+        int tab_w = 108;
+        int tab_h = 22;
 
-        graphics_fill_rounded_rect(tab_x, ry + 3, 108, 22, 4, tab_bg);
-        graphics_draw_rounded_rect(tab_x, ry + 3, 108, 22, 4, tab_border);
+        /* Tab background */
+        if (is_focus) {
+            renderer_fill_alpha_rounded_rect(tab_x, ry + 3, tab_w, tab_h, GH_RADIUS_MD,
+                                             GH_COLOR_SURFACE_HOVER, 255);
+            graphics_draw_rounded_rect(tab_x, ry + 3, tab_w, tab_h, GH_RADIUS_MD, GH_COLOR_GREEN_LEAF);
+        } else if (s->is_minimized) {
+            renderer_fill_alpha_rounded_rect(tab_x, ry + 3, tab_w, tab_h, GH_RADIUS_MD,
+                                             GH_COLOR_SURFACE, 200);
+            graphics_draw_rounded_rect(tab_x, ry + 3, tab_w, tab_h, GH_RADIUS_MD, GH_COLOR_BORDER_LIGHT);
+        } else {
+            renderer_fill_alpha_rounded_rect(tab_x, ry + 3, tab_w, tab_h, GH_RADIUS_MD,
+                                             GH_COLOR_BACKGROUND, 220);
+            graphics_draw_rounded_rect(tab_x, ry + 3, tab_w, tab_h, GH_RADIUS_MD, GH_COLOR_BORDER_LIGHT);
+        }
 
         /* Tag pill inside tab */
-        draw_text_clipped(tab_x + 6, ry + 6, 96, s->title, is_focus ? 0xFFFFFFFF : 0xFF94A3B8, FONT_TRANSPARENT, 0);
+        draw_text_clipped(tab_x + 6, ry + 6, 96, s->title,
+                          is_focus ? GH_COLOR_TEXT_PRIMARY : GH_COLOR_TEXT_SECONDARY,
+                          FONT_TRANSPARENT, 0);
         tab_x += 114;
     }
 
     /* 4. Right Status Chips */
     /* [ Text Mode ] Exit button */
     int exit_x = rx + rw - 74;
-    graphics_fill_rounded_rect(exit_x, ry + 3, 68, 22, 4, 0xFF2A1215);
-    graphics_draw_rounded_rect(exit_x, ry + 3, 68, 22, 4, 0xFFEF4444);
-    draw_text(exit_x + 8, ry + 6, "Text [X]", 0xFFFCA5A5, FONT_TRANSPARENT, 0);
+    int exit_w = 68;
+    int exit_h = 22;
+    renderer_draw_button_styled(exit_x, ry + 3, exit_w, exit_h, "Text [X]",
+                                RENDERER_BTN_OUTLINE, 0, 0);
 
     /* Uptime Readout */
     uint64_t ticks = timer_get_ticks();
@@ -80,8 +139,8 @@ void rail_draw(int sw, int sh, surface_t* surfaces, int count, int focused_id) {
     up_buf[un] = '\0';
 
     int up_x = exit_x - 70;
-    draw_text(up_x, ry + 6, "UP:", 0xFF64748B, FONT_TRANSPARENT, 0);
-    draw_text(up_x + 24, ry + 6, up_buf, 0xFF38BDF8, FONT_TRANSPARENT, 0);
+    draw_text(up_x, ry + 6, "UP:", GH_COLOR_TEXT_MUTED, FONT_TRANSPARENT, 0);
+    draw_text(up_x + 24, ry + 6, up_buf, GH_COLOR_GREEN_LEAF, FONT_TRANSPARENT, 0);
 
     /* RAM Readout */
     pmm_stats_t pmm = pmm_get_stats();
@@ -99,8 +158,8 @@ void rail_draw(int sw, int sh, surface_t* surfaces, int count, int focused_id) {
     ram_buf[rn] = '\0';
 
     int ram_x = up_x - 110;
-    draw_text(ram_x, ry + 6, "RAM:", 0xFF64748B, FONT_TRANSPARENT, 0);
-    draw_text(ram_x + 32, ry + 6, ram_buf, 0xFF34D399, FONT_TRANSPARENT, 0);
+    draw_text(ram_x, ry + 6, "RAM:", GH_COLOR_TEXT_MUTED, FONT_TRANSPARENT, 0);
+    draw_text(ram_x + 32, ry + 6, ram_buf, GH_COLOR_BLUE_INFO, FONT_TRANSPARENT, 0);
 
     /* Clock / Ticks Indicator */
     int tick_x = ram_x - 90;
@@ -109,8 +168,8 @@ void rail_draw(int sw, int sh, surface_t* surfaces, int count, int focused_id) {
     tick_buf[0] = '\0';
     rail_put_uint(tick_buf, &tn, sizeof(tick_buf), ticks);
 
-    draw_text(tick_x, ry + 6, "T:", 0xFF64748B, FONT_TRANSPARENT, 0);
-    draw_text(tick_x + 16, ry + 6, tick_buf, 0xFFFBBF24, FONT_TRANSPARENT, 0);
+    draw_text(tick_x, ry + 6, "T:", GH_COLOR_TEXT_MUTED, FONT_TRANSPARENT, 0);
+    draw_text(tick_x + 16, ry + 6, tick_buf, GH_COLOR_GREEN_LEAF_DEEP, FONT_TRANSPARENT, 0);
 }
 
 int rail_handle_event(const input_event_t* ev, int sw, int sh,
@@ -124,9 +183,17 @@ int rail_handle_event(const input_event_t* ev, int sw, int sh,
     if (ev->type != INPUT_EVENT_MOUSE_BUTTON_DOWN) return 0;
 
     int rx = 8;
-    int ry = 4;
+    int ry = g_rail_current_y;
     int rw = sw - 16;
     int rh = 28;
+
+    if (ry < 0) {
+        if (ev->x >= (sw - 120) / 2 && ev->x <= (sw + 120) / 2 && ev->y >= 0 && ev->y <= 12) {
+            rail_request_emerge();
+            return 1;
+        }
+        return 0;
+    }
 
     if (ev->x < rx || ev->x >= rx + rw || ev->y < ry || ev->y >= ry + rh) {
         return 0;

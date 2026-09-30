@@ -19,6 +19,14 @@
 #include "../vfs.h"
 #include "../irq.h"
 #include "../vmm.h"
+#include "../elf.h"
+#include "../syscall.h"
+#include "../cpu.h"
+#include "renderer.h"
+#include "gh_theme.h"
+#include "../os_shell.h"
+#include "verdant.h"
+
 
 static int gt_copy(char* dst, int cap, const char* src) {
     int n = 0;
@@ -97,11 +105,15 @@ void guiterm_init(guiterm_t* t) {
     t->history_pos = -1;
     t->input[0] = '\0';
     t->input_len = 0;
-    t->fg = 0xFFCBD5E1;
-    t->bg = 0xFF0A0F16;
-    t->prompt_color = 0xFF6EE7B7;
-    t->accent = 0xFF34D399;
+    t->fg = GH_COLOR_TEXT_PRIMARY;         /* Off-white ink text */
+    t->bg = GH_COLOR_CODE_BG;              /* Deep obsidian-emerald code canvas */
+    t->prompt_color = GH_COLOR_GREEN_SPROUT; /* Vibrant mint-sprout prompt */
+    t->accent = GH_COLOR_GREEN_LEAF;        /* Brand leaf accent */
     t->commands_run = 0;
+
+    guiterm_write_line(t, "Greenhouse OS 1.1.0 -- Berry Shell");
+    guiterm_write_line(t, "Your hardware, your software. Type 'help' for commands.");
+    guiterm_write_line(t, "");
 }
 
 void guiterm_write_line(guiterm_t* t, const char* text) {
@@ -128,30 +140,6 @@ void guiterm_clear(guiterm_t* t) {
     t->scroll = 0;
     t->input[0] = '\0';
     t->input_len = 0;
-}
-
-static void gt_cmd_help(guiterm_t* t) {
-    guiterm_write_line(t, "Verdant Terminal Commands:");
-    guiterm_write_line(t, "  help      this command list");
-    guiterm_write_line(t, "  clear     clear the terminal screen");
-    guiterm_write_line(t, "  ver       Greenhouse OS version & kernel info");
-    guiterm_write_line(t, "  gwinfo    framebuffer & compositor surface");
-    guiterm_write_line(t, "  windows   window / surface manager state");
-    guiterm_write_line(t, "  pointer   pointer position, buttons, cursor");
-    guiterm_write_line(t, "  input     keyboard / mouse event statistics");
-    guiterm_write_line(t, "  memory    physical memory manager usage");
-    guiterm_write_line(t, "  heap      kernel heap usage & allocations");
-    guiterm_write_line(t, "  ps        active process list");
-    guiterm_write_line(t, "  dir       list files on current drive (C:\\)");
-    guiterm_write_line(t, "  disks     mounted drives & filesystem status");
-    guiterm_write_line(t, "  uptime    kernel PIT ticks and uptime");
-    guiterm_write_line(t, "  berry     ask Berry AI assistant");
-}
-
-static void gt_cmd_ver(guiterm_t* t) {
-    guiterm_write_line(t, "Greenhouse OS " GREENHOUSE_VERSION_STRING " " GREENHOUSE_BUILD_TYPE);
-    guiterm_write_line(t, "kernel built " __DATE__ " " __TIME__);
-    guiterm_write_line(t, "graphics: back buffer compositor, software cursor, input queue");
 }
 
 static void gt_cmd_gwinfo(guiterm_t* t) {
@@ -288,121 +276,6 @@ static void gt_cmd_input(guiterm_t* t) {
     guiterm_write_line(t, buf);
 }
 
-static void gt_cmd_memory(guiterm_t* t) {
-    pmm_stats_t st = pmm_get_stats();
-
-    char buf[128];
-    int n = gt_put_str(buf, 0, sizeof(buf), "frames used ");
-    n = gt_put_uint(buf, n, sizeof(buf), st.used_frames);
-    n = gt_put_str(buf, n, sizeof(buf), " of ");
-    n = gt_put_uint(buf, n, sizeof(buf), st.total_frames);
-    n = gt_put_str(buf, n, sizeof(buf), " (free ");
-    n = gt_put_uint(buf, n, sizeof(buf), st.free_frames);
-    n = gt_put_str(buf, n, sizeof(buf), ")");
-    guiterm_write_line(t, buf);
-
-    n = gt_put_str(buf, 0, sizeof(buf), "usable ");
-    n = gt_put_uint(buf, n, sizeof(buf), st.usable_memory_bytes / (1024 * 1024));
-    n = gt_put_str(buf, n, sizeof(buf), " MiB of ");
-    n = gt_put_uint(buf, n, sizeof(buf), st.total_memory_bytes / (1024 * 1024));
-    n = gt_put_str(buf, n, sizeof(buf), " MiB total");
-    guiterm_write_line(t, buf);
-
-    n = gt_put_str(buf, 0, sizeof(buf), "regions reported: ");
-    n = gt_put_uint(buf, n, sizeof(buf), (uint64_t)pmm_get_region_count());
-    guiterm_write_line(t, buf);
-}
-
-static void gt_cmd_heap(guiterm_t* t) {
-    heap_stats_t hp = heap_get_stats();
-    char buf[128];
-    int n = gt_put_str(buf, 0, sizeof(buf), "heap used: ");
-    n = gt_put_uint(buf, n, sizeof(buf), hp.used_bytes / 1024);
-    n = gt_put_str(buf, n, sizeof(buf), " KiB of ");
-    n = gt_put_uint(buf, n, sizeof(buf), hp.total_bytes / 1024);
-    n = gt_put_str(buf, n, sizeof(buf), " KiB total (free ");
-    n = gt_put_uint(buf, n, sizeof(buf), hp.free_bytes / 1024);
-    n = gt_put_str(buf, n, sizeof(buf), " KiB, active ");
-    n = gt_put_uint(buf, n, sizeof(buf), (uint64_t)hp.active_allocs);
-    n = gt_put_str(buf, n, sizeof(buf), ")");
-    guiterm_write_line(t, buf);
-}
-
-static void gt_cmd_ps(guiterm_t* t) {
-    int cnt = process_count();
-    char buf[128];
-    int n = gt_put_str(buf, 0, sizeof(buf), "PID   NAME                 STATE       MODE");
-    guiterm_write_line(t, buf);
-
-    for (int i = 0; i < cnt && i < 12; i++) {
-        process_t* p = process_get_by_index((size_t)i);
-        if (!p) continue;
-
-        n = gt_put_uint(buf, 0, sizeof(buf), (uint64_t)p->pid);
-        while (n < 6) buf[n++] = ' ';
-        buf[n] = '\0';
-        n = gt_put_str(buf, n, sizeof(buf), p->name);
-        while (n < 27) buf[n++] = ' ';
-        buf[n] = '\0';
-
-        const char* st = "READY";
-        if (p->state == PROCESS_RUNNING) st = "RUNNING";
-        else if (p->state == PROCESS_SLEEPING) st = "SLEEPING";
-        else if (p->state == PROCESS_BLOCKED) st = "BLOCKED";
-        else if (p->state == PROCESS_TERMINATED) st = "DEAD";
-        n = gt_put_str(buf, n, sizeof(buf), st);
-        while (n < 39) buf[n++] = ' ';
-        buf[n] = '\0';
-
-        n = gt_put_str(buf, n, sizeof(buf), p->is_user ? "User" : "Kernel");
-        guiterm_write_line(t, buf);
-    }
-}
-
-static void gt_cmd_dir(guiterm_t* t) {
-    vfs_node_t* node = vfs_resolve_path(NULL, "C:\\");
-    if (!node) {
-        guiterm_write_line(t, "cannot open C:\\ directory");
-        return;
-    }
-    guiterm_write_line(t, "Directory of C:\\");
-    vfs_dirent_t ent;
-    for (uint32_t i = 0; i < 24; i++) {
-        if (vfs_readdir(node, i, &ent) != 0) break;
-        char buf[96];
-        int n = gt_put_str(buf, 0, sizeof(buf), ent.is_dir ? "<DIR> " : "      ");
-        n = gt_put_str(buf, n, sizeof(buf), ent.name);
-        while (n < 28) buf[n++] = ' ';
-        buf[n] = '\0';
-        if (!ent.is_dir) {
-            n = gt_put_uint(buf, n, sizeof(buf), (uint64_t)ent.size);
-            n = gt_put_str(buf, n, sizeof(buf), " B");
-        }
-        guiterm_write_line(t, buf);
-    }
-}
-
-static void gt_cmd_disks(guiterm_t* t) {
-    vfs_drive_t* c = vfs_get_drive('C');
-    vfs_drive_t* r = vfs_get_drive('R');
-
-    char buf[128];
-    if (c && c->is_mounted) {
-        int n = gt_put_str(buf, 0, sizeof(buf), "Drive C: [");
-        n = gt_put_str(buf, n, sizeof(buf), c->label);
-        n = gt_put_str(buf, n, sizeof(buf), "] fs: ");
-        n = gt_put_str(buf, n, sizeof(buf), c->fs_type);
-        guiterm_write_line(t, buf);
-    }
-    if (r && r->is_mounted) {
-        int n = gt_put_str(buf, 0, sizeof(buf), "Drive R: [");
-        n = gt_put_str(buf, n, sizeof(buf), r->label);
-        n = gt_put_str(buf, n, sizeof(buf), "] fs: ");
-        n = gt_put_str(buf, n, sizeof(buf), r->fs_type);
-        guiterm_write_line(t, buf);
-    }
-}
-
 static void gt_cmd_berry(guiterm_t* t, const char* arg) {
     if (!arg || !arg[0]) {
         guiterm_write_line(t, "Berry: Greenhouse OS AI assistant ready. Ask me anything!");
@@ -411,74 +284,95 @@ static void gt_cmd_berry(guiterm_t* t, const char* arg) {
     }
 }
 
-static void gt_cmd_uptime(guiterm_t* t) {
-    uint64_t ticks = timer_get_ticks();
-    char buf[96];
-    int n = gt_put_str(buf, 0, sizeof(buf), "ticks ");
-    n = gt_put_uint(buf, n, sizeof(buf), ticks);
-    n = gt_put_str(buf, n, sizeof(buf), "  (timer 100 Hz, kernel uptime)");
-    guiterm_write_line(t, buf);
+static void guiterm_shell_output_cb(const char* line, void* ctx) {
+    guiterm_t* t = (guiterm_t*)ctx;
+    if (t) {
+        guiterm_write_line(t, line);
+    }
+}
+
+int guiterm_run_elf(guiterm_t* t, const char* filepath) {
+    if (!t || !filepath) return -1;
+    while (*filepath == ' ') filepath++;
+    if (!*filepath) {
+        guiterm_write_line(t, "Usage: run <program.elf>");
+        return -1;
+    }
+
+    os_shell_set_output_hook(guiterm_shell_output_cb, t);
+    int rc = os_shell_run_elf(filepath, 0, NULL);
+    os_shell_set_output_hook(NULL, NULL);
+    return rc;
 }
 
 void guiterm_execute(guiterm_t* t, const char* line) {
     if (!t) return;
 
-    char echoed[GTERM_COLS + 8];
+    /* Trim leading spaces */
+    const char* p = line ? line : "";
+    while (*p == ' ') p++;
+
+    /* Echo input line with greenhouse> prompt */
+    char echoed[GTERM_COLS + 16];
     int n = 0;
-    const char* lead = "verdant> ";
-    while (*lead) echoed[n++] = *lead++;
-    while (*line && n < GTERM_COLS) echoed[n++] = *line++;
+    const char* lead = "greenhouse> ";
+    while (*lead && n < GTERM_COLS) echoed[n++] = *lead++;
+    const char* orig = p;
+    while (*p && n < GTERM_COLS) echoed[n++] = *p++;
     echoed[n] = '\0';
     guiterm_write_line(t, echoed);
 
-    char cmd[32];
-    const char* rest = 0;
-    gt_token(line, cmd, sizeof(cmd), &rest);
-
-    if (cmd[0] == '\0') {
-        /* blank line: nothing to do */
-    } else if (gt_streq(cmd, "help")) {
-        gt_cmd_help(t);
-    } else if (gt_streq(cmd, "clear") || gt_streq(cmd, "cls")) {
-        guiterm_clear(t);
-    } else if (gt_streq(cmd, "ver") || gt_streq(cmd, "version")) {
-        gt_cmd_ver(t);
-    } else if (gt_streq(cmd, "gwinfo")) {
-        gt_cmd_gwinfo(t);
-    } else if (gt_streq(cmd, "windows")) {
-        gt_cmd_windows(t);
-    } else if (gt_streq(cmd, "pointer")) {
-        gt_cmd_pointer(t);
-    } else if (gt_streq(cmd, "input")) {
-        gt_cmd_input(t);
-    } else if (gt_streq(cmd, "memory") || gt_streq(cmd, "mem")) {
-        gt_cmd_memory(t);
-    } else if (gt_streq(cmd, "heap")) {
-        gt_cmd_heap(t);
-    } else if (gt_streq(cmd, "ps") || gt_streq(cmd, "tasks")) {
-        gt_cmd_ps(t);
-    } else if (gt_streq(cmd, "dir") || gt_streq(cmd, "ls")) {
-        gt_cmd_dir(t);
-    } else if (gt_streq(cmd, "disks") || gt_streq(cmd, "vol")) {
-        gt_cmd_disks(t);
-    } else if (gt_streq(cmd, "berry")) {
-        gt_cmd_berry(t, rest);
-    } else if (gt_streq(cmd, "uptime")) {
-        gt_cmd_uptime(t);
-    } else {
-        char unknown[GTERM_COLS + 1];
-        int n2 = 0;
-        const char* p1 = "unknown command: ";
-        while (*p1 && n2 < GTERM_COLS - 20) unknown[n2++] = *p1++;
-        int i = 0;
-        while (cmd[i] && n2 < GTERM_COLS - 1) unknown[n2++] = cmd[i++];
-        unknown[n2] = '\0';
-        guiterm_write_line(t, unknown);
-        guiterm_write_line(t, "try 'help'");
+    if (*orig == '\0') {
+        return;
     }
 
     t->commands_run++;
-    (void)rest;
+
+    char first_word[32];
+    const char* rest = NULL;
+    gt_token(orig, first_word, sizeof(first_word), &rest);
+
+    /* Check for logout / exit command */
+    if (gt_streq(first_word, "logout") || gt_streq(first_word, "exit") || gt_streq(first_word, "quit")) {
+        guiterm_write_line(t, "Logging out of Verdant graphical session...");
+        verdant_request_exit(VERDANT_EXIT_CLOSED);
+        return;
+    }
+
+    /* Check for terminal clear */
+    if (gt_streq(first_word, "clear") || gt_streq(first_word, "cls")) {
+        guiterm_clear(t);
+        return;
+    }
+
+
+
+    /* Verdant GUI diagnostics helpers */
+    if (gt_streq(first_word, "gwinfo")) {
+        gt_cmd_gwinfo(t);
+        return;
+    }
+    if (gt_streq(first_word, "windows")) {
+        gt_cmd_windows(t);
+        return;
+    }
+    if (gt_streq(first_word, "pointer")) {
+        gt_cmd_pointer(t);
+        return;
+    }
+    if (gt_streq(first_word, "input")) {
+        gt_cmd_input(t);
+        return;
+    }
+    if (gt_streq(first_word, "berry")) {
+        gt_cmd_berry(t, rest);
+        return;
+    }
+
+    /* Route all commands through Greenhouse OS unified command engine */
+    os_shell_set_output_hook(guiterm_shell_output_cb, t);
+    os_shell_execute(orig);
+    os_shell_set_output_hook(NULL, NULL);
 }
 
 void guiterm_handle_event(guiterm_t* t, const input_event_t* ev) {
@@ -533,7 +427,16 @@ void guiterm_handle_event(guiterm_t* t, const input_event_t* ev) {
         return;
     }
 
+    if (c == 27) {
+        /* ESC cancels the current input line without leaving GUI */
+        t->input[0] = '\0';
+        t->input_len = 0;
+        t->history_pos = -1;
+        return;
+    }
+
     if (c == INPUT_KEY_BACKSPACE) {
+
         if (t->input_len > 0) {
             t->input_len--;
             t->input[t->input_len] = '\0';
@@ -552,11 +455,12 @@ void guiterm_handle_event(guiterm_t* t, const input_event_t* ev) {
 void guiterm_draw(guiterm_t* t, int cx, int cy, int cw, int ch) {
     if (!t) return;
 
-    graphics_fill_rect(cx, cy, cw, ch, t->bg);
+    /* Deep obsidian-emerald code canvas background */
+    renderer_fill_alpha_rect(cx, cy, cw, ch, GH_COLOR_CODE_BG, 248);
 
-    int pad = GTERM_PAD;
+    int pad = GTERM_PAD + 4;
     int gw = font_glyph_width() + 1;
-    int gh = font_glyph_height();
+    int gh = font_glyph_height() + 1;
     int cols = (cw - 2 * pad) / gw;
     int rows = (ch - 2 * pad) / gh;
     if (cols < 1) cols = 1;
@@ -572,32 +476,35 @@ void guiterm_draw(guiterm_t* t, int cx, int cy, int cw, int ch) {
     if (first < 0) first = 0;
     if (first > t->count - 1) first = (t->count > 0) ? t->count - 1 : 0;
 
-    for (int r = 0; r < rows; r++) {
+    for (int r = 0; r < rows - 1; r++) {
         int index = first + r;
         if (index >= t->count) break;
         draw_text_clipped(cx + pad, cy + pad + r * gh, cols * gw,
-                          t->lines[index], t->fg, t->bg, 1);
+                          t->lines[index], t->fg, FONT_TRANSPARENT, 0);
     }
 
-    /* Prompt line: always the last row, styled like a real terminal. */
+    /* Prompt line: always the last row, styled like a real terminal */
     int prompt_y = cy + pad + (rows - 1) * gh;
-    draw_text(cx + pad, prompt_y, "> ", t->accent, t->bg, 1);
-    draw_text_clipped(cx + pad + 2 * gw, prompt_y, (cols - 2) * gw, t->input, t->fg, t->bg, 1);
+    const char* prompt_str = "greenhouse> ";
+    int p_chars = 12;
+    int p_width = p_chars * gw;
+    draw_text(cx + pad, prompt_y, prompt_str, t->prompt_color, FONT_TRANSPARENT, 0);
+    draw_text_clipped(cx + pad + p_width, prompt_y, (cols - p_chars) * gw, t->input, t->fg, FONT_TRANSPARENT, 0);
 
-    /* Blinking block cursor. */
+    /* Blinking block cursor with soft rounded pill */
     if (((timer_get_ticks() / 25) & 1) == 0) {
-        int cur_x = cx + pad + 2 * gw + t->input_len * gw;
-        graphics_fill_rect(cur_x, prompt_y, font_glyph_width(), gh, t->accent);
+        int cur_x = cx + pad + p_width + t->input_len * gw;
+        renderer_fill_alpha_rounded_rect(cur_x, prompt_y + 1, font_glyph_width(), gh - 2, 2, t->prompt_color, 220);
     }
 
-    /* Scroll indicator. */
+    /* Subtle scroll indicator */
     if (t->count > rows) {
-        int bar_x = cx + cw - 5;
+        int bar_x = cx + cw - 6;
         int bar_h = ch - 2 * pad;
-        graphics_fill_rect(bar_x, cy + pad, 3, bar_h, 0xFF16202F);
+        renderer_fill_alpha_rounded_rect(bar_x, cy + pad, 3, bar_h, 1, GH_COLOR_BORDER_LIGHT, 150);
         int visible = rows * bar_h / t->count;
         if (visible < 8) visible = 8;
         int offset = (t->count - rows) ? (t->scroll * (bar_h - visible)) / (t->count - rows) : 0;
-        graphics_fill_rect(bar_x, cy + pad + offset, 3, visible, t->accent);
+        renderer_fill_alpha_rounded_rect(bar_x, cy + pad + offset, 3, visible, 1, t->accent, 200);
     }
 }

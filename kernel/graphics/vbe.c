@@ -4,7 +4,9 @@
  */
 
 #include "vbe.h"
+#include "font.h"
 #include "../io.h"
+
 
 /* ------------------------------------------------------------------------------
  * PCI configuration space access (mechanism 1)
@@ -312,10 +314,100 @@ int vbe_restore_text_state(const vga_text_state_t* in) {
         outb(0x3C0, in->attr[i]);
     }
     inb(0x3DA);
-    outb(0x3C0, in->attr_index);
+    /* Bit 5 (0x20) is Palette Address Source / Video Output Enable.
+     * Force bit 5 set to ensure video signal generation is active. */
+    outb(0x3C0, (uint8_t)(in->attr_index | 0x20));
 
     outb(0x3C2, in->misc); /* MISC output last: it resets several controllers */
     return 0;
+}
+
+static uint8_t s_bios_font_backup[8192];
+static int     s_bios_font_backup_valid = 0;
+
+void vbe_backup_font(void) {
+    if (s_bios_font_backup_valid) return;
+
+    /* Put Graphics Controller into Plane 2 read mode */
+    outb(0x3CE, 0x04); uint8_t orig_gr04 = inb(0x3CF);
+    outb(0x3CE, 0x05); uint8_t orig_gr05 = inb(0x3CF);
+    outb(0x3CE, 0x06); uint8_t orig_gr06 = inb(0x3CF);
+
+    outb(0x3CE, 0x04); outb(0x3CF, 0x02); /* Plane 2 read */
+    outb(0x3CE, 0x05); outb(0x3CF, 0x00); /* Disable odd/even */
+    outb(0x3CE, 0x06); outb(0x3CF, 0x04); /* Map to 0xA0000 (64KB) */
+
+    volatile const uint8_t* plane2 = (volatile const uint8_t*)0xA0000;
+    int non_zero = 0;
+    for (int i = 0; i < 8192; i++) {
+        s_bios_font_backup[i] = plane2[i];
+        if (s_bios_font_backup[i] != 0) non_zero++;
+    }
+
+    /* Restore Graphics Controller registers */
+    outb(0x3CE, 0x04); outb(0x3CF, orig_gr04);
+    outb(0x3CE, 0x05); outb(0x3CF, orig_gr05);
+    outb(0x3CE, 0x06); outb(0x3CF, orig_gr06);
+
+    if (non_zero > 100) {
+        s_bios_font_backup_valid = 1;
+    }
+}
+
+static void vbe_ensure_font_data(void) {
+    if (s_bios_font_backup_valid) return;
+
+    /* Fallback to built-in 8x16 font */
+    for (int i = 0; i < 8192; i++) s_bios_font_backup[i] = 0;
+    for (int c = 32; c <= 126; c++) {
+        const uint8_t* g = font_get_glyph((char)c);
+        if (g) {
+            for (int r = 0; r < 16; r++) {
+                s_bios_font_backup[c * 32 + r] = g[r];
+            }
+        }
+    }
+    s_bios_font_backup_valid = 1;
+}
+
+void vbe_restore_font(uint64_t bar0) {
+    vbe_ensure_font_data();
+
+    /* 1. If linear framebuffer is mapped, restore directly into Plane 2 (offset 0x20000) */
+    if (bar0 != 0) {
+        volatile uint8_t* fb_plane2 = (volatile uint8_t*)(uintptr_t)(bar0 + 0x20000);
+        for (int i = 0; i < 8192; i++) {
+            fb_plane2[i] = s_bios_font_backup[i];
+        }
+    }
+
+    /* 2. Program standard VGA registers to write Plane 2 via 0xA0000 */
+    /* Put Sequencer in Plane 2 write mode */
+    outb(0x3C4, 0x00); outb(0x3C5, 0x01); /* sync reset */
+    outb(0x3C4, 0x02); outb(0x3C5, 0x04); /* write only to Plane 2 */
+    outb(0x3C4, 0x04); outb(0x3C5, 0x07); /* sequential addressing */
+    outb(0x3C4, 0x00); outb(0x3C5, 0x03); /* clear reset */
+
+    /* Put Graphics Controller in Plane 2 access mode at 0xA0000 */
+    outb(0x3CE, 0x04); outb(0x3CF, 0x02); /* read map plane 2 */
+    outb(0x3CE, 0x05); outb(0x3CF, 0x00); /* disable odd/even */
+    outb(0x3CE, 0x06); outb(0x3CF, 0x04); /* map to 0xA0000 (64KB) */
+
+    volatile uint8_t* plane2 = (volatile uint8_t*)0xA0000;
+    for (int i = 0; i < 8192; i++) {
+        plane2[i] = s_bios_font_backup[i];
+    }
+
+    /* Restore Sequencer to normal text mode */
+    outb(0x3C4, 0x00); outb(0x3C5, 0x01);
+    outb(0x3C4, 0x02); outb(0x3C5, 0x03); /* write to planes 0 & 1 */
+    outb(0x3C4, 0x04); outb(0x3C5, 0x03); /* odd/even addressing */
+    outb(0x3C4, 0x00); outb(0x3C5, 0x03);
+
+    /* Restore Graphics Controller to normal text mode */
+    outb(0x3CE, 0x04); outb(0x3CF, 0x00);
+    outb(0x3CE, 0x05); outb(0x3CF, 0x10); /* odd/even mode */
+    outb(0x3CE, 0x06); outb(0x3CF, 0x0E); /* map to 0xB8000 (32KB) */
 }
 
 int vbe_restore_text_mode(void) {
@@ -354,3 +446,4 @@ int vbe_restore_text_mode(void) {
 
     return 0;
 }
+

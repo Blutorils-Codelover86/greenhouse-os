@@ -17,6 +17,10 @@ static size_t e_strlen(const char* s) {
 }
 
 int elf_load_executable(const char* filepath, process_t** out_proc) {
+    return elf_load_executable_args(filepath, 0, NULL, out_proc);
+}
+
+int elf_load_executable_args(const char* filepath, int argc, char** argv, process_t** out_proc) {
     if (!filepath || !*filepath) return -1;
 
     process_t* cur = process_get_current();
@@ -88,6 +92,7 @@ int elf_load_executable(const char* filepath, process_t** out_proc) {
 
     /* Allocate and Map User Stack (16 KiB = 4 pages at USER_STACK_TOP - 16KB) */
     uintptr_t ustack_base = USER_STACK_TOP - USTACK_SIZE;
+    uintptr_t top_frame = 0;
     for (uintptr_t spage = ustack_base; spage < USER_STACK_TOP; spage += 4096) {
         uintptr_t s_frame = pmm_alloc_frame();
         if (!s_frame) {
@@ -96,6 +101,9 @@ int elf_load_executable(const char* filepath, process_t** out_proc) {
         }
         e_memset((void*)s_frame, 0, 4096);
         vmm_map_page_in(proc_pml4, spage, s_frame, VMM_FLAG_PRESENT | VMM_FLAG_USER | VMM_FLAG_WRITABLE);
+        if (spage == USER_STACK_TOP - 4096) {
+            top_frame = s_frame;
+        }
     }
 
     /* Extract binary name */
@@ -106,10 +114,50 @@ int elf_load_executable(const char* filepath, process_t** out_proc) {
     }
     const char* proc_name = filepath + name_start;
 
-    process_t* proc = process_create(proc_name, ehdr.e_entry, 1 /* is_user */, proc_pml4, USER_STACK_TOP - 16);
+    uintptr_t ustack_top = USER_STACK_TOP - 16;
+    uintptr_t user_argv_addr = 0;
+
+    /* Populate argv on the top stack page if arguments are provided */
+    if (argc > 0 && argv && top_frame) {
+        size_t total_str_bytes = 0;
+        for (int i = 0; i < argc; i++) {
+            total_str_bytes += e_strlen(argv[i]) + 1;
+        }
+
+        size_t aligned_str_bytes = (total_str_bytes + 15) & ~15ULL;
+        uintptr_t str_vaddr_start = USER_STACK_TOP - 16 - aligned_str_bytes;
+
+        size_t ptr_bytes = (argc + 1) * sizeof(uint64_t);
+        size_t aligned_ptr_bytes = (ptr_bytes + 15) & ~15ULL;
+        user_argv_addr = str_vaddr_start - aligned_ptr_bytes;
+        ustack_top = (user_argv_addr - 16) & ~15ULL;
+
+        uintptr_t cur_str_vaddr = str_vaddr_start;
+        uint64_t* user_argv_table = (uint64_t*)(top_frame + (user_argv_addr - (USER_STACK_TOP - 4096)));
+
+        for (int i = 0; i < argc; i++) {
+            user_argv_table[i] = cur_str_vaddr;
+            char* dest = (char*)(top_frame + (cur_str_vaddr - (USER_STACK_TOP - 4096)));
+            const char* src = argv[i];
+            size_t slen = e_strlen(src);
+            for (size_t k = 0; k <= slen; k++) {
+                dest[k] = src[k];
+            }
+            cur_str_vaddr += slen + 1;
+        }
+        user_argv_table[argc] = 0; /* NULL terminator */
+    }
+
+    process_t* proc = process_create(proc_name, ehdr.e_entry, 1 /* is_user */, proc_pml4, ustack_top);
     if (!proc) {
         vmm_destroy_address_space(proc_pml4);
         return -11;
+    }
+
+    if (argc > 0 && user_argv_addr) {
+        proc->saved_frame->rdi = (uint64_t)argc;
+        proc->saved_frame->rsi = (uint64_t)user_argv_addr;
+        proc->saved_frame->rsp = (uint64_t)ustack_top;
     }
 
     if (out_proc) {

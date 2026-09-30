@@ -125,7 +125,7 @@ do_run() {
         args+=(-drive "file=disk.img,format=raw,index=0,media=disk,if=ide")
     fi
     args+=(
-        -m 256M
+        -m 1G
         -vga std
         -display none
         -vnc "0.0.0.0:$VNC_DISPLAY"

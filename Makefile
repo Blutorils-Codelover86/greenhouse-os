@@ -18,9 +18,9 @@ LDFLAGS := -n -T kernel/linker.ld
 
 GRAPHICS_OBJS := kernel/graphics/framebuffer.o kernel/graphics/vbe.o kernel/graphics/font.o kernel/graphics/graphics.o kernel/graphics/gfx_test.o
 INPUT_OBJS    := kernel/input/input.o kernel/input/kbd.o kernel/input/mouse.o
-GUI_OBJS      := kernel/gui/renderer.o kernel/gui/shell.o kernel/gui/morph.o kernel/gui/surface.o kernel/gui/compositor.o kernel/gui/launcher.o kernel/gui/rail.o kernel/gui/berry_surface.o kernel/gui/filebrowser.o kernel/gui/sysmon.o kernel/gui/canvas_surface.o kernel/gui/settings_surface.o kernel/gui/guiterm.o kernel/gui/cursor.o kernel/gui/widget.o kernel/gui/window.o kernel/gui/wm.o kernel/gui/verdant.o kernel/gui/gui.o
+GUI_OBJS      := kernel/gui/renderer.o kernel/gui/shell.o kernel/gui/morph.o kernel/gui/surface.o kernel/gui/compositor.o kernel/gui/launcher.o kernel/gui/context_menu.o kernel/gui/app_registry.o kernel/gui/rail.o kernel/gui/berry_surface.o kernel/gui/filebrowser.o kernel/gui/sysmon.o kernel/gui/canvas_surface.o kernel/gui/settings_surface.o kernel/gui/guiterm.o kernel/gui/cursor.o kernel/gui/test_screen.o kernel/gui/widget.o kernel/gui/window.o kernel/gui/wm.o kernel/gui/verdant.o kernel/gui/gui.o
 
-KERNEL_OBJS := kernel/boot.o kernel/interrupts.o kernel/gdt.o kernel/pmm.o kernel/vmm.o kernel/heap.o kernel/process.o kernel/syscall.o kernel/elf.o kernel/block.o kernel/ata.o kernel/vfs.o kernel/ramfs.o kernel/fat32.o $(GRAPHICS_OBJS) $(INPUT_OBJS) $(GUI_OBJS) kernel/kernel.o
+KERNEL_OBJS := kernel/boot.o kernel/interrupts.o kernel/gdt.o kernel/pmm.o kernel/vmm.o kernel/heap.o kernel/process.o kernel/syscall.o kernel/elf.o kernel/block.o kernel/ata.o kernel/vfs.o kernel/ramfs.o kernel/fat32.o kernel/os_shell.o $(GRAPHICS_OBJS) $(INPUT_OBJS) $(GUI_OBJS) kernel/kernel.o
 BIN := iso/boot/greenhouse.bin
 ISO := greenhouse.iso
 
@@ -31,7 +31,7 @@ USER_PROGRAMS := user/bin/HELLO.ELF user/bin/ECHO.ELF user/bin/CAT.ELF user/bin/
 .PHONY: all clean iso run run-serial run-gui test test-gui test-gfx-userland \
         test-gfx-depths userland disk.img
 
-all: userland $(ISO)
+all: userland disk.img $(ISO)
 
 userland: $(USER_PROGRAMS)
 
@@ -127,20 +127,20 @@ kernel/gui/%.o: kernel/gui/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 qemu: $(ISO) disk.img
-	$(QEMU) -boot d -cdrom $(ISO) -drive file=disk.img,format=raw,index=0,media=disk -m 256M -vga std -display gtk
+	$(QEMU) -boot d -cdrom $(ISO) -drive file=disk.img,format=raw,index=0,media=disk -m 1G -vga std -display gtk
 
 run: qemu
 
 run-gui: qemu
 
 run-sdl: $(ISO) disk.img
-	$(QEMU) -boot d -cdrom $(ISO) -drive file=disk.img,format=raw,index=0,media=disk -m 256M -vga std -display sdl
+	$(QEMU) -boot d -cdrom $(ISO) -drive file=disk.img,format=raw,index=0,media=disk -m 1G -vga std -display sdl
 
 run-curses: $(ISO) disk.img
-	$(QEMU) -boot d -cdrom $(ISO) -drive file=disk.img,format=raw,index=0,media=disk -m 256M -vga std -display curses
+	$(QEMU) -boot d -cdrom $(ISO) -drive file=disk.img,format=raw,index=0,media=disk -m 1G -vga std -display curses
 
 run-serial: $(ISO) disk.img
-	$(QEMU) -boot d -cdrom $(ISO) -drive file=disk.img,format=raw,index=0,media=disk -m 256M -vga std -serial stdio -display none
+	$(QEMU) -boot d -cdrom $(ISO) -drive file=disk.img,format=raw,index=0,media=disk -m 1G -vga std -serial stdio -display none
 
 # The tests boot QEMU themselves; the image has to carry the userland binaries
 # for the GFX userland test to run.

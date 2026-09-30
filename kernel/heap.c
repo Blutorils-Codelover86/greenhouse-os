@@ -72,7 +72,7 @@ void heap_init(uintptr_t start_addr, size_t initial_bytes) {
 void* kmalloc(size_t size) {
     if (size == 0) return NULL;
     if (heap_first_block == NULL) {
-        heap_init(0x20000000ULL, 256 * 1024); /* 256 KiB default initial heap */
+        heap_init(0x20000000ULL, 16 * 1024 * 1024); /* 16 MiB default initial heap */
     }
 
     /* 16-byte align payload size */
@@ -114,6 +114,9 @@ void* kmalloc(size_t size) {
 
     /* Need to expand heap */
     size_t expand_amount = size + BLOCK_HEADER_SIZE + PAGE_SIZE;
+    if (expand_amount < 2 * 1024 * 1024) {
+        expand_amount = 2 * 1024 * 1024; /* Expand in 2 MiB chunks */
+    }
     uintptr_t old_end = heap_current_end;
 
     if (heap_expand(expand_amount) != 0) {

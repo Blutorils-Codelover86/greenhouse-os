@@ -1,10 +1,11 @@
 /* ==============================================================================
- * Greenhouse OS - VERDANT Surface System (implementation)
+ * Greenhouse OS - Light-Mode Surface System (implementation)
  * ==============================================================================
  */
 
 #include "surface.h"
 #include "morph.h"
+#include "gh_theme.h"
 
 static void surface_str_copy(char* dst, int cap, const char* src) {
     int i = 0;
@@ -44,15 +45,16 @@ void surface_init(surface_t* s, surface_id_t id, const char* title, const char* 
     s->flags = SURFACE_FLAG_RESIZABLE;
     s->z_order = 0;
     s->opacity = 255;
+    s->target_opacity = 255;
 
-    /* Verdant Deep Glass Palette */
-    s->bg_color     = 0xFF0D1522; /* Deep Glass Background */
-    s->fg_color     = 0xFFE2E8F0; /* Bright Silver White */
-    s->border_color = 0xFF1E293B; /* Subtle Slate Border */
-    s->title_bg     = 0xFF0F1A2C; /* Glass Header */
-    s->title_fg     = 0xFFF1F5F9; /* High Contrast Title */
-    s->accent       = accent ? accent : 0xFF10B981; /* Default Emerald */
-    s->client_color = 0xFF080D16; /* Deep Client Background */
+    /* Light Mode Theme */
+    s->bg_color     = GH_COLOR_SURFACE;
+    s->fg_color     = GH_COLOR_TEXT_PRIMARY;
+    s->border_color = GH_COLOR_BORDER_LIGHT;
+    s->title_bg     = GH_COLOR_SURFACE;
+    s->title_fg     = GH_COLOR_TEXT_PRIMARY;
+    s->accent       = accent ? accent : GH_COLOR_GREEN_LEAF_DEEP;
+    s->client_color = GH_COLOR_BACKGROUND;
 
     s->user_data    = 0;
     s->on_draw      = 0;
@@ -82,6 +84,12 @@ void surface_set_client_color(surface_t* s, uint32_t color) {
     s->client_color = color;
 }
 
+void surface_set_opacity(surface_t* s, uint8_t opacity, int animate) {
+    if (!s) return;
+    s->target_opacity = opacity;
+    if (!animate) s->opacity = opacity;
+}
+
 int surface_includes(const surface_t* s, int px, int py) {
     if (!s || !s->visible || s->is_minimized) return 0;
     return (px >= s->x && px < s->x + s->w && py >= s->y && py < s->y + s->h);
@@ -89,8 +97,9 @@ int surface_includes(const surface_t* s, int px, int py) {
 
 void surface_step_animation(surface_t* s) {
     if (!s) return;
-    morph_rect(&s->x, &s->y, &s->w, &s->h,
-               s->target_x, s->target_y, s->target_w, s->target_h, 3);
+    morph_surface_transition(&s->x, &s->y, &s->w, &s->h, &s->opacity,
+                             s->target_x, s->target_y, s->target_w, s->target_h,
+                             s->target_opacity, 3);
 }
 
 void surface_maximize(surface_t* s, int max_w, int max_h) {
@@ -104,9 +113,13 @@ void surface_maximize(surface_t* s, int max_w, int max_h) {
     s->saved_w = s->w;
     s->saved_h = s->h;
     s->target_x = 12;
-    s->target_y = 42; /* Leave room for System Rail */
+    s->target_y = 46; /* Leave room for top bar */
     s->target_w = max_w - 24;
-    s->target_h = max_h - 54;
+    s->target_h = (max_h > 120) ? (max_h - 108) : (max_h - 54); /* Room for dock */
+    s->x = s->target_x;
+    s->y = s->target_y;
+    s->w = s->target_w;
+    s->h = s->target_h;
     s->is_maximized = 1;
 }
 
@@ -116,6 +129,10 @@ void surface_restore(surface_t* s) {
     s->target_y = s->saved_y;
     s->target_w = s->saved_w;
     s->target_h = s->saved_h;
+    s->x = s->saved_x;
+    s->y = s->saved_y;
+    s->w = s->saved_w;
+    s->h = s->saved_h;
     s->is_maximized = 0;
     s->is_minimized = 0;
     s->visible = 1;

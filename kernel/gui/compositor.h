@@ -10,9 +10,9 @@
 #include <stddef.h>
 #include "renderer.h"
 
-#define COMPOSITOR_TITLE_HEIGHT   30
+#define COMPOSITOR_TITLE_HEIGHT   32
 #define COMPOSITOR_BORDER_SIZE    1
-#define COMPOSITOR_CORNER_RADIUS  8
+#define COMPOSITOR_CORNER_RADIUS  10
 
 /* Window Control Zone Hit Testing */
 #define COMPOSITOR_ZONE_NONE      0

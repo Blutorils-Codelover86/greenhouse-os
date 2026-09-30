@@ -23,6 +23,7 @@
 #include "irq.h"
 #include "io.h"
 #include "version.h"
+#include "cpu.h"
 #include "graphics/framebuffer.h"
 #include "graphics/vbe.h"
 #include "graphics/graphics.h"
@@ -34,6 +35,8 @@
 #include "gui/gui.h"
 #include "gui/wm.h"
 #include "gui/verdant.h"
+#include "gui/test_screen.h"
+#include "os_shell.h"
 
 extern uint8_t _kernel_start[];
 extern uint8_t _kernel_end[];
@@ -145,7 +148,7 @@ static void serial_init(void) {
     outb(COM1_PORT + 4, 0x0B);
 }
 
-static void serial_put_char(char c) {
+void serial_put_char(char c) {
     for (int i = 0; i < 10000; i++) {
         if (inb(COM1_PORT + 5) & 0x20) break;
     }
@@ -203,6 +206,38 @@ static void clear_screen(void) {
     cursor_col = 0;
     update_hardware_cursor(cursor_row, cursor_col);
 }
+
+static uint16_t s_saved_vga_screen[VGA_WIDTH * VGA_HEIGHT];
+static int      s_saved_vga_cursor_row = 0;
+static int      s_saved_vga_cursor_col = 0;
+static uint8_t  s_saved_vga_color = 0;
+static int      s_vga_screen_saved = 0;
+
+static void vga_save_screen(void) {
+    for (int i = 0; i < VGA_WIDTH * VGA_HEIGHT; i++) {
+        s_saved_vga_screen[i] = VGA_MEMORY[i];
+    }
+    s_saved_vga_cursor_row = cursor_row;
+    s_saved_vga_cursor_col = cursor_col;
+    s_saved_vga_color = current_color;
+    s_vga_screen_saved = 1;
+}
+
+static void vga_restore_screen(void) {
+    if (!s_vga_screen_saved) {
+        clear_screen();
+        return;
+    }
+    for (int i = 0; i < VGA_WIDTH * VGA_HEIGHT; i++) {
+        VGA_MEMORY[i] = s_saved_vga_screen[i];
+    }
+    cursor_row = s_saved_vga_cursor_row;
+    cursor_col = s_saved_vga_cursor_col;
+    current_color = s_saved_vga_color;
+    update_hardware_cursor(cursor_row, cursor_col);
+    s_vga_screen_saved = 0;
+}
+
 
 static void scroll_screen(void) {
     for (int row = 1; row < VGA_HEIGHT; row++) {
@@ -276,6 +311,14 @@ static void print(const char* text) {
     for (size_t i = 0; text[i] != '\0'; i++) {
         put_char(text[i]);
     }
+}
+
+void kernel_print(const char* text) {
+    print(text);
+}
+
+void kernel_put_char(char c) {
+    put_char(c);
 }
 
 static void print_uint64(uint64_t n) {
@@ -594,11 +637,11 @@ void timer_delay_ticks(uint64_t ticks) {
     }
 }
 
-static uint64_t timer_get_uptime_seconds(void) {
+uint64_t timer_get_uptime_seconds(void) {
     return kernel_ticks / timer_frequency;
 }
 
-static uint64_t timer_get_uptime_ms(void) {
+uint64_t timer_get_uptime_ms(void) {
     return (kernel_ticks * 1000) / timer_frequency;
 }
 
@@ -717,20 +760,11 @@ void rtc_get_datetime(RTCDateTime* dt) {
  * ==============================================================================
  */
 
-typedef struct {
-    char vendor[13];
-    char brand[49];
-    uint32_t max_leaf;
-    uint32_t family;
-    uint32_t model;
-    uint32_t stepping;
-    uint32_t features_edx;
-    uint32_t features_ecx;
-    uint32_t ext_features_edx;
-    uint32_t ext_features_ecx;
-} CPUInfo;
-
 static CPUInfo cpu_info;
+
+const CPUInfo* get_cpu_info(void) {
+    return &cpu_info;
+}
 
 static inline void cpuid(uint32_t leaf, uint32_t subleaf, uint32_t* eax, uint32_t* ebx, uint32_t* ecx, uint32_t* edx) {
     __asm__ volatile ("cpuid"
@@ -2471,6 +2505,8 @@ static void cmd_gfx(const char* args) {
     /* Let the message reach the serial mirror before the mode switch. */
     timer_delay_ticks(3);
 
+    vga_save_screen();
+
     if (graphics_enter_ex(want_w, want_h, want_bpp) != 0) {
         set_color(COLOR_LIGHT_RED, COLOR_BLACK);
         print("Graphics mode request failed - the adapter refused the mode.\n");
@@ -2494,6 +2530,8 @@ static void cmd_gfx(const char* args) {
 
     /* Leave graphics mode, then report over the text console. */
     graphics_leave();
+    vga_restore_screen();
+
     framebuffer_text_diff_t text_diff;
     int text_diff_total = framebuffer_verify_text_state_ex(&text_diff);
 
@@ -2590,6 +2628,8 @@ static void cmd_gui(const char* args) {
         }
     }
 
+    vga_save_screen();
+
     if (gui_enter() != 0) {
         set_color(COLOR_LIGHT_RED, COLOR_BLACK);
         print("Could not enter graphics mode - the adapter refused the mode.\n");
@@ -2611,13 +2651,17 @@ static void cmd_gui(const char* args) {
     gui_get_report(&report);
     gui_leave();
 
+    /* Restore pristine text console state and clean cursor */
+    vga_restore_screen();
+
     set_color(COLOR_LIGHT_CYAN, COLOR_BLACK);
     print("\nGUI session finished (");
     if (reason == GUI_EXIT_ESC) print("ESC pressed");
     else if (reason == GUI_EXIT_TIMEOUT) print("time limit reached");
-    else if (reason == GUI_EXIT_CLOSED) print("window closed");
+    else if (reason == GUI_EXIT_CLOSED) print("logged out");
     else print("error");
     print(").\n");
+
 
     set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
     print("  Surface:        ");
@@ -2661,6 +2705,32 @@ static void cmd_gui(const char* args) {
     set_color(COLOR_WHITE, COLOR_BLACK);
     print_uint64((uint64_t)report.events_processed);
     print(" processed by the window manager\n");
+    set_color(COLOR_LIGHT_GREY, COLOR_BLACK);
+}
+
+static void cmd_renderertest(const char* args) {
+    int seconds = 0;
+    if (args && args[0]) {
+        for (const char* p = args; *p >= '0' && *p <= '9'; p++) {
+            seconds = seconds * 10 + (*p - '0');
+        }
+    }
+
+    set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    print("Launching Greenhouse 2D Renderer Visual Benchmark...\n");
+    if (seconds > 0) {
+        print("Running for ");
+        print_uint64((uint64_t)seconds);
+        print(" second(s) (ESC to quit early)...\n");
+    } else {
+        print("Interactive mode (keys 1-7 switch cursor, ESC to quit)...\n");
+    }
+    timer_delay_ticks(3);
+
+    test_screen_run(seconds);
+
+    set_color(COLOR_LIGHT_CYAN, COLOR_BLACK);
+    print("\nRenderer visual benchmark completed.\n");
     set_color(COLOR_LIGHT_GREY, COLOR_BLACK);
 }
 
@@ -2720,6 +2790,9 @@ static void execute_command(void) {
     } else if (strcasecmp(verb, "VERDANT") == 0 || strcasecmp(verb, "STARTGUI") == 0 ||
                strcasecmp(verb, "GUI") == 0 || strcasecmp(verb, "DESKTOP") == 0) {
         cmd_gui(args);
+    } else if (strcasecmp(verb, "RENDERERTEST") == 0 || strcasecmp(verb, "TESTSCREEN") == 0 ||
+               strcasecmp(verb, "BENCH") == 0 || strcasecmp(verb, "BENCHMARK") == 0) {
+        cmd_renderertest(args);
     } else if (strcasecmp(verb, "INPUT") == 0) {
         cmd_input();
     } else if (strcasecmp(verb, "TICKS") == 0 || strcasecmp(verb, "UPTIME") == 0) {
@@ -2765,14 +2838,7 @@ static void execute_command(void) {
     } else if (strcasecmp(verb, "SHUTDOWN") == 0 || strcasecmp(verb, "EXIT") == 0) {
         shutdown_system();
     } else {
-        set_color(COLOR_LIGHT_RED, COLOR_BLACK);
-        print("'");
-        set_color(COLOR_WHITE, COLOR_BLACK);
-        print(verb);
-        set_color(COLOR_LIGHT_RED, COLOR_BLACK);
-        print("' is not recognized as an internal or external command.\n");
-        set_color(COLOR_LIGHT_GREY, COLOR_BLACK);
-        print("Type 'help' for a list of available commands.\n");
+        os_shell_execute(command_buffer);
     }
 
     command_buffer[0] = '\0';
@@ -2806,7 +2872,7 @@ void kernel_main(uint32_t mb2_magic, uint64_t mb2_info_addr) {
     uintptr_t k_end   = (uintptr_t)_kernel_end;
     pmm_init(mb2_magic, mb2_info_addr, k_start, k_end);
     vmm_init();
-    heap_init(0x20000000ULL, 512 * 1024); /* 512 KiB initial heap */
+    heap_init(0x20000000ULL, 16 * 1024 * 1024); /* 16 MiB initial heap for smooth GUI caching */
 
     /* 3. Phase 4 & 5: Process Scheduler & Syscall Subsystems */
     process_init();
@@ -2847,10 +2913,14 @@ void kernel_main(uint32_t mb2_magic, uint64_t mb2_info_addr) {
         vfs_mount('C', fat32_root, "HARDDISK", "FAT32");
         vfs_mount('R', ramfs_root, "RAMDISK", "RAMFS");
         strcpy(current_working_dir, "C:\\");
+        os_shell_init();
+        os_shell_set_cwd("C:\\");
     } else {
         /* Primary Drive C: RAMFS */
         vfs_mount('C', ramfs_root, "RAMDISK", "RAMFS");
         strcpy(current_working_dir, "C:\\GREENHOUSE");
+        os_shell_init();
+        os_shell_set_cwd("C:\\GREENHOUSE");
     }
 
     /* 5. Display Welcome Screen */

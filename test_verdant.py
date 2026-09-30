@@ -79,7 +79,7 @@ def main():
     proc = subprocess.Popen(
         ['qemu-system-x86_64', '-boot', 'd', '-cdrom', 'greenhouse.iso',
          '-drive', 'file=disk.img,format=raw,index=0,media=disk',
-         '-m', '256M', '-display', 'none', '-monitor', 'stdio',
+         '-m', '1G', '-display', 'none', '-monitor', 'stdio',
          '-serial', f'file:{log}', '-vga', 'std'],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, env=env)
@@ -151,9 +151,13 @@ def main():
     mon('mouse_button 1', 0.2)
     mon('mouse_button 0', 0.4)
 
-    # Exit Verdant via ESC / Text mode exit
-    print("[VERDANT] Exiting Verdant back to text console (ESC)...")
-    mon('sendkey esc', 1.5)
+    # Exit Verdant via logout in GUI terminal
+    print("[VERDANT] Exiting Verdant back to text console (focusing terminal via F3 and typing 'logout')...")
+    mon('sendkey f3', 0.8)
+    send('logout')
+    mon('sendkey ret', 2.0)
+
+
 
     # Capture post-exit text mode screendump
     mon('screendump /tmp/verdant_post_text.ppm', 1.0)

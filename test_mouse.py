@@ -15,7 +15,7 @@ if os.path.exists(log):
 
 proc = subprocess.Popen(
     ['qemu-system-x86_64', '-boot', 'd', '-cdrom', 'greenhouse.iso',
-     '-m', '256M', '-display', 'none', '-monitor', 'stdio',
+     '-m', '1G', '-display', 'none', '-monitor', 'stdio',
      '-serial', f'file:{log}', '-vga', 'std'],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     text=True, env=env)

@@ -20,6 +20,7 @@ static size_t pmm_usable_frames = 0;
 static uint64_t pmm_total_ram_bytes = 0;
 static uint64_t pmm_usable_ram_bytes = 0;
 static uintptr_t pmm_max_phys_addr = 0;
+static size_t pmm_search_hint = 0;
 
 static inline void bitmap_set(size_t frame) {
     if (frame < pmm_total_frames) {
@@ -71,12 +72,13 @@ void pmm_init(uint32_t mb2_magic, uint64_t mb2_info_addr, uintptr_t kernel_start
     pmm_usable_ram_bytes = 0;
     pmm_max_phys_addr = 0;
     pmm_region_count = 0;
+    pmm_search_hint = 0;
 
     if (mb2_magic != MULTIBOOT2_BOOTLOADER_MAGIC || mb2_info_addr == 0) {
-        /* Fallback default to 128 MB */
-        pmm_max_phys_addr = 128 * 1024 * 1024;
+        /* Fallback default to 1 GB */
+        pmm_max_phys_addr = 1024ULL * 1024 * 1024;
         pmm_regions[0].base = 0x100000;
-        pmm_regions[0].length = 127 * 1024 * 1024;
+        pmm_regions[0].length = 1023ULL * 1024 * 1024;
         pmm_regions[0].type = 1;
         pmm_region_count = 1;
     } else {
@@ -167,10 +169,20 @@ void pmm_init(uint32_t mb2_magic, uint64_t mb2_info_addr, uintptr_t kernel_start
 }
 
 uintptr_t pmm_alloc_frame(void) {
-    for (size_t i = 0; i < pmm_total_frames; i++) {
+    size_t start = pmm_search_hint;
+    for (size_t i = start; i < pmm_total_frames; i++) {
         if (!bitmap_test(i)) {
             bitmap_set(i);
             pmm_used_frames++;
+            pmm_search_hint = i + 1;
+            return (uintptr_t)(i * PAGE_SIZE);
+        }
+    }
+    for (size_t i = 0; i < start; i++) {
+        if (!bitmap_test(i)) {
+            bitmap_set(i);
+            pmm_used_frames++;
+            pmm_search_hint = i + 1;
             return (uintptr_t)(i * PAGE_SIZE);
         }
     }
@@ -183,6 +195,9 @@ void pmm_free_frame(uintptr_t phys_addr) {
         if (bitmap_test(frame)) {
             bitmap_clear(frame);
             if (pmm_used_frames > 0) pmm_used_frames--;
+            if (frame < pmm_search_hint) {
+                pmm_search_hint = frame;
+            }
         }
     }
 }
@@ -203,6 +218,9 @@ uintptr_t pmm_alloc_frames(size_t count) {
                     bitmap_set(start_frame + j);
                 }
                 pmm_used_frames += count;
+                if (start_frame + count >= pmm_search_hint) {
+                    pmm_search_hint = start_frame + count;
+                }
                 return (uintptr_t)(start_frame * PAGE_SIZE);
             }
         } else {
@@ -219,6 +237,9 @@ void pmm_free_frames(uintptr_t phys_addr, size_t count) {
         if (f < pmm_total_frames && bitmap_test(f)) {
             bitmap_clear(f);
             if (pmm_used_frames > 0) pmm_used_frames--;
+            if (f < pmm_search_hint) {
+                pmm_search_hint = f;
+            }
         }
     }
 }

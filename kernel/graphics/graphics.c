@@ -27,6 +27,8 @@ static int      gfx_back_buffer_error = 0;
 /* Frame bookkeeping */
 static int      gfx_in_frame = 0;
 static int      gfx_frame_dirty = 0;
+static int      gfx_dirty_min_y = 0;
+static int      gfx_dirty_max_y = 0;
 static uint64_t gfx_present_count = 0;
 static uint64_t gfx_frames = 0;
 
@@ -200,11 +202,23 @@ int graphics_get_width(void)  { return (int)gfx_width; }
 int graphics_get_height(void) { return (int)gfx_height; }
 int graphics_get_pitch(void)  { return (int)gfx_pitch; }
 int graphics_get_bpp(void)    { return (int)gfx_bpp; }
+void* graphics_get_target(void) { return gfx_target; }
+void  graphics_mark_dirty(void) { gfx_frame_dirty = 1; }
+
+void graphics_damage_rows(int y0, int y1) {
+    if (y0 < 0) y0 = 0;
+    if (y1 >= (int)gfx_height) y1 = (int)gfx_height - 1;
+    if (y0 < gfx_dirty_min_y) gfx_dirty_min_y = y0;
+    if (y1 > gfx_dirty_max_y) gfx_dirty_max_y = y1;
+    gfx_frame_dirty = 1;
+}
 
 void graphics_begin_frame(void) {
     if (!gfx_active) return;
     gfx_frames++;
     gfx_frame_dirty = 0;
+    gfx_dirty_min_y = (int)gfx_height;
+    gfx_dirty_max_y = 0;
     gfx_target = gfx_back_buffer ? gfx_back_buffer : (uint8_t*)(uintptr_t)framebuffer_get_info()->address;
     graphics_clear_clip();
     gfx_in_frame = 1;
@@ -222,20 +236,41 @@ void graphics_present(void) {
     if (gfx_back_buffer) {
         uint8_t* dst = (uint8_t*)(uintptr_t)fb->address;
         uint8_t* src = gfx_back_buffer;
-        uint32_t copy = gfx_pitch;
 
-        for (uint32_t y = 0; y < gfx_height; y++) {
-            uint32_t* d = (uint32_t*)(dst + (uint64_t)y * fb->pitch);
-            const uint32_t* s = (const uint32_t*)(src + (uint64_t)y * gfx_pitch);
-            uint32_t words = copy / sizeof(uint32_t);
-            for (uint32_t i = 0; i < words; i++) d[i] = s[i];
+        uint32_t y0 = (gfx_dirty_min_y < 0) ? 0 : (uint32_t)gfx_dirty_min_y;
+        uint32_t y1 = (gfx_dirty_max_y >= (int)gfx_height) ? gfx_height : (uint32_t)(gfx_dirty_max_y + 1);
+        if (y0 >= y1) {
+            y0 = 0;
+            y1 = gfx_height;
+        }
+
+        if (gfx_pitch == fb->pitch) {
+            /* Contiguous memory copy using 64-bit words */
+            uint64_t offset = (uint64_t)y0 * gfx_pitch;
+            uint64_t* d = (uint64_t*)(dst + offset);
+            const uint64_t* s = (const uint64_t*)(src + offset);
+            size_t qwords = ((size_t)(y1 - y0) * gfx_pitch) / sizeof(uint64_t);
+            for (size_t i = 0; i < qwords; i++) {
+                d[i] = s[i];
+            }
+        } else {
+            size_t line_qwords = gfx_pitch / sizeof(uint64_t);
+            for (uint32_t y = y0; y < y1; y++) {
+                uint64_t* d = (uint64_t*)(dst + (uint64_t)y * fb->pitch);
+                const uint64_t* s = (const uint64_t*)(src + (uint64_t)y * gfx_pitch);
+                for (size_t i = 0; i < line_qwords; i++) d[i] = s[i];
+            }
         }
     }
     gfx_present_count++;
     gfx_frame_dirty = 0;
+    gfx_dirty_min_y = (int)gfx_height;
+    gfx_dirty_max_y = 0;
 }
 
 void graphics_force_present(void) {
+    gfx_dirty_min_y = 0;
+    gfx_dirty_max_y = (int)gfx_height - 1;
     gfx_frame_dirty = 1;
     graphics_present();
 }
@@ -305,6 +340,8 @@ void graphics_put_pixel(int x, int y, uint32_t color) {
         default:
             return;
     }
+    if (y < gfx_dirty_min_y) gfx_dirty_min_y = y;
+    if (y > gfx_dirty_max_y) gfx_dirty_max_y = y;
     gfx_frame_dirty = 1;
 }
 
@@ -405,6 +442,8 @@ void graphics_fill_rect(int x, int y, int w, int h, uint32_t color) {
                 return;
         }
     }
+    if (y0 < gfx_dirty_min_y) gfx_dirty_min_y = y0;
+    if (y1 - 1 > gfx_dirty_max_y) gfx_dirty_max_y = y1 - 1;
     gfx_frame_dirty = 1;
 }
 

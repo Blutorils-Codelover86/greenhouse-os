@@ -125,8 +125,11 @@ int  vbe_set_graphics_mode(uint32_t width, uint32_t height, uint32_t bits_per_pi
 int  vbe_restore_text_mode(void);
 void vbe_save_text_state(vga_text_state_t* out);
 int  vbe_restore_text_state(const vga_text_state_t* in);
+void vbe_backup_font(void);
+void vbe_restore_font(uint64_t bar0);
 
 uint32_t vbe_read_register(uint8_t index);
 void     vbe_write_register(uint8_t index, uint16_t value);
 
 #endif /* VBE_H */
+

@@ -1,13 +1,15 @@
 /* ==============================================================================
- * Greenhouse OS - VERDANT Settings / Display Inspector Surface (implementation)
+ * Greenhouse OS - Light-Mode Settings / Display Inspector Surface (implementation)
  * ==============================================================================
  */
 
 #include "settings_surface.h"
 #include "../graphics/graphics.h"
 #include "../graphics/font.h"
+#include "gh_theme.h"
 #include "../graphics/framebuffer.h"
 #include "../version.h"
+#include "../cpu.h"
 
 static void set_put_uint(char* buf, int* n, int cap, uint64_t v) {
     char tmp[24];
@@ -41,18 +43,34 @@ void settings_surface_draw(surface_t* s, int cx, int cy, int cw, int ch) {
     const framebuffer_info_t* fb = framebuffer_get_info();
 
     /* 1. Header */
-    graphics_fill_gradient_h(cx + 8, cy + 8, cw - 16, 26, 0xFF0D2820, 0xFF081410);
-    graphics_draw_rounded_rect(cx + 8, cy + 8, cw - 16, 26, 4, 0xFF10B981);
-    draw_text(cx + 14, cy + 13, "[*] DISPLAY PROPERTIES & VERDANT ENGINE", 0xFF6EE7B7, FONT_TRANSPARENT, 1);
+    graphics_fill_gradient_h(cx + 8, cy + 6, cw - 16, 26, GH_COLOR_GREEN_LEAF_SOFT, GH_COLOR_GREEN_LEAF_DEEP);
+    graphics_draw_rounded_rect(cx + 8, cy + 6, cw - 16, 26, 4, GH_COLOR_GREEN_LEAF);
+    draw_text(cx + 14, cy + 11, "[*] SYSTEM PROPERTIES & VERDANT ENGINE", GH_COLOR_WHITE, FONT_TRANSPARENT, 1);
 
-    int y = cy + 42;
+    /* 2. Top Card: Hardware & Compositor Specifications */
+    int card1_y = cy + 38;
+    int card1_h = 100;
+    graphics_fill_rounded_rect(cx + 8, card1_y, cw - 16, card1_h, 6, GH_COLOR_SURFACE_HOVER);
+    graphics_draw_rounded_rect(cx + 8, card1_y, cw - 16, card1_h, 6, GH_COLOR_BORDER_LIGHT);
+
+    int y = card1_y + 8;
     int gh = font_glyph_height() + 4;
 
-    /* Mode readout */
+    /* Processor Info */
+    const CPUInfo* cpu = get_cpu_info();
+    draw_text(cx + 16, y, "Processor:", GH_COLOR_TEXT_MUTED, FONT_TRANSPARENT, 0);
+    if (cpu && cpu->brand[0]) {
+        draw_text_clipped(cx + 110, y, cw - 130, cpu->brand, GH_COLOR_GREEN_LEAF_DEEP, FONT_TRANSPARENT, 1);
+    } else {
+        draw_text(cx + 110, y, "x86_64 Compatible", GH_COLOR_TEXT_MUTED, FONT_TRANSPARENT, 0);
+    }
+    y += gh;
+
+    /* Mode & Pitch */
     char line[128];
     int n = 0;
     line[0] = '\0';
-    draw_text(cx + 14, y, "Active Mode: ", 0xFF94A3B8, FONT_TRANSPARENT, 0);
+    draw_text(cx + 16, y, "Display:", GH_COLOR_TEXT_MUTED, FONT_TRANSPARENT, 0);
     set_put_uint(line, &n, sizeof(line), (uint64_t)graphics_get_width());
     line[n++] = 'x';
     set_put_uint(line, &n, sizeof(line), (uint64_t)graphics_get_height());
@@ -64,36 +82,22 @@ void settings_surface_draw(surface_t* s, int cx, int cy, int cw, int ch) {
     line[n++] = 'b';
     line[n++] = 'p';
     line[n++] = 'p';
-    line[n++] = '\0';
-    draw_text(cx + 120, y, line, 0xFF38BDF8, FONT_TRANSPARENT, 1);
-    y += gh;
-
-    /* Stride & Backend */
-    n = 0;
-    line[0] = '\0';
-    draw_text(cx + 14, y, "Stride / BAR0: ", 0xFF94A3B8, FONT_TRANSPARENT, 0);
+    line[n++] = ' ';
+    line[n++] = '(';
     if (fb) {
-        set_put_uint(line, &n, sizeof(line), fb->pitch);
-        line[n++] = ' ';
-        line[n++] = 'b';
-        line[n++] = 'y';
-        line[n++] = 't';
-        line[n++] = 'e';
-        line[n++] = 's';
-        line[n++] = ' ';
-        line[n++] = '|';
-        line[n++] = ' ';
         set_put_hex(line, &n, sizeof(line), fb->address);
     } else {
-        line[0] = 'N'; line[1] = '/'; line[2] = 'A'; line[3] = '\0';
+        line[n++] = '-';
     }
-    draw_text(cx + 120, y, line, 0xFFE2E8F0, FONT_TRANSPARENT, 0);
+    line[n++] = ')';
+    line[n++] = '\0';
+    draw_text(cx + 110, y, line, GH_COLOR_GREEN_LEAF_DEEP, FONT_TRANSPARENT, 0);
     y += gh;
 
-    /* Back Buffer Memory */
+    /* Compositor Buffer & Presents */
     n = 0;
     line[0] = '\0';
-    draw_text(cx + 14, y, "Compositor: ", 0xFF94A3B8, FONT_TRANSPARENT, 0);
+    draw_text(cx + 16, y, "Compositor:", GH_COLOR_TEXT_MUTED, FONT_TRANSPARENT, 0);
     if (graphics_has_back_buffer()) {
         set_put_uint(line, &n, sizeof(line), (uint64_t)(graphics_get_back_buffer_size() / 1024));
         line[n++] = ' ';
@@ -114,27 +118,64 @@ void settings_surface_draw(surface_t* s, int cx, int cy, int cw, int ch) {
         line[n++] = 'f';
         line[n++] = 'e';
         line[n++] = 'r';
-        line[n++] = '\0';
     } else {
-        line[0] = 'D'; line[1] = 'i'; line[2] = 'r'; line[3] = 'e'; line[4] = 'c'; line[5] = 't'; line[6] = '\0';
+        line[n++] = 'D'; line[n++] = 'i'; line[n++] = 'r'; line[n++] = 'e'; line[n++] = 'c'; line[n++] = 't';
     }
-    draw_text(cx + 120, y, line, 0xFF34D399, FONT_TRANSPARENT, 0);
-    y += gh;
-
-    /* Presents & FPS count */
-    n = 0;
-    line[0] = '\0';
-    draw_text(cx + 14, y, "Presents: ", 0xFF94A3B8, FONT_TRANSPARENT, 0);
+    line[n++] = ' ';
+    line[n++] = '|';
+    line[n++] = ' ';
+    line[n++] = 'P';
+    line[n++] = 'r';
+    line[n++] = 'e';
+    line[n++] = 's';
+    line[n++] = 'e';
+    line[n++] = 'n';
+    line[n++] = 't';
+    line[n++] = 's';
+    line[n++] = ':';
+    line[n++] = ' ';
     set_put_uint(line, &n, sizeof(line), graphics_get_present_count());
-    draw_text(cx + 120, y, line, 0xFFFBBF24, FONT_TRANSPARENT, 0);
+    line[n++] = '\0';
+    draw_text(cx + 110, y, line, GH_COLOR_TEXT_PRIMARY, FONT_TRANSPARENT, 0);
     y += gh;
 
-    /* Shortcuts Card */
-    int card_y = cy + ch - 50;
-    graphics_fill_rounded_rect(cx + 8, card_y, cw - 16, 42, 4, 0xFF0E1724);
-    graphics_draw_rounded_rect(cx + 8, card_y, cw - 16, 42, 4, 0xFF1E3A5F);
-    draw_text(cx + 14, card_y + 6, "HOTKEYS: Space/F1 = Launcher | Tab = Focus | F5 = Arrange", 0xFFCBD5E1, FONT_TRANSPARENT, 0);
-    draw_text(cx + 14, card_y + 22, "Press ESC or click 'Text [X]' to exit to VGA shell.", 0xFFF43F5E, FONT_TRANSPARENT, 0);
+    /* OS & Architecture */
+    draw_text(cx + 16, y, "Platform:", GH_COLOR_TEXT_MUTED, FONT_TRANSPARENT, 0);
+    draw_text(cx + 110, y, "Greenhouse OS (x86_64, Ring 3 ELF Multitasking)", GH_COLOR_TEXT_SECONDARY, FONT_TRANSPARENT, 0);
+
+    /* 3. Bottom Card: Desktop Shortcuts & Window Management Reference */
+    int card2_y = card1_y + card1_h + 8;
+    int card2_h = ch - (card2_y - cy) - 8;
+    if (card2_h < 130) card2_h = 130;
+    graphics_fill_rounded_rect(cx + 8, card2_y, cw - 16, card2_h, 6, GH_COLOR_SURFACE_HOVER);
+    graphics_draw_rounded_rect(cx + 8, card2_y, cw - 16, card2_h, 6, GH_COLOR_BORDER_LIGHT);
+
+    int sy = card2_y + 8;
+    draw_text(cx + 16, sy, "[=] WINDOW MANAGEMENT & DESKTOP SHORTCUTS", GH_COLOR_GREEN_LEAF_DEEP, FONT_TRANSPARENT, 1);
+    sy += gh + 2;
+
+    draw_text(cx + 16, sy, "Alt + Left / Right", GH_COLOR_TEXT_PRIMARY, FONT_TRANSPARENT, 1);
+    draw_text(cx + 180, sy, "Snap window to Left / Right Half", GH_COLOR_TEXT_MUTED, FONT_TRANSPARENT, 0);
+    sy += gh;
+
+    draw_text(cx + 16, sy, "Alt + Up / Down", GH_COLOR_TEXT_PRIMARY, FONT_TRANSPARENT, 1);
+    draw_text(cx + 180, sy, "Maximize window  /  Restore or Minimize", GH_COLOR_TEXT_MUTED, FONT_TRANSPARENT, 0);
+    sy += gh;
+
+    draw_text(cx + 16, sy, "Alt + Tab", GH_COLOR_TEXT_PRIMARY, FONT_TRANSPARENT, 1);
+    draw_text(cx + 180, sy, "Cycle active surface focus & raise", GH_COLOR_TEXT_MUTED, FONT_TRANSPARENT, 0);
+    sy += gh;
+
+    draw_text(cx + 16, sy, "F11  or  Win + D", GH_COLOR_TEXT_PRIMARY, FONT_TRANSPARENT, 1);
+    draw_text(cx + 180, sy, "Toggle Show Desktop (minimize / restore all)", GH_COLOR_TEXT_MUTED, FONT_TRANSPARENT, 0);
+    sy += gh;
+
+    draw_text(cx + 16, sy, "Shift+F10 / R-Click", GH_COLOR_TEXT_PRIMARY, FONT_TRANSPARENT, 1);
+    draw_text(cx + 180, sy, "Open Desktop Context Menu", GH_COLOR_TEXT_MUTED, FONT_TRANSPARENT, 0);
+    sy += gh;
+
+    draw_text(cx + 16, sy, "Space / F1 / [GH]", GH_COLOR_GREEN_LEAF, FONT_TRANSPARENT, 1);
+    draw_text(cx + 180, sy, "Radial App Launcher   |   ESC: Return to Console", GH_COLOR_AMBER_WARN, FONT_TRANSPARENT, 0);
 }
 
 int settings_surface_event(surface_t* s, const input_event_t* ev) {

@@ -50,6 +50,7 @@ struct surface {
     int              flags;
     int              z_order;
     uint8_t          opacity;                   /* 0..255 */
+    uint8_t          target_opacity;            /* 0..255 */
 
     uint32_t         bg_color;
     uint32_t         fg_color;
@@ -72,6 +73,7 @@ void surface_set_title(surface_t* s, const char* title);
 void surface_set_tag(surface_t* s, const char* tag);
 void surface_set_colors(surface_t* s, uint32_t bg, uint32_t fg, uint32_t border);
 void surface_set_client_color(surface_t* s, uint32_t color);
+void surface_set_opacity(surface_t* s, uint8_t opacity, int animate);
 int  surface_includes(const surface_t* s, int px, int py);
 void surface_step_animation(surface_t* s);
 void surface_maximize(surface_t* s, int max_w, int max_h);

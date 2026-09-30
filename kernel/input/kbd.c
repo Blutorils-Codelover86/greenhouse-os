@@ -13,6 +13,7 @@ static int      kbd_shift = 0;
 static int      kbd_ctrl = 0;
 static int      kbd_alt = 0;
 static int      kbd_caps = 0;
+static int      kbd_seed = 0;
 static uint32_t kbd_scancodes = 0;
 static uint32_t kbd_overruns = 0;
 
@@ -39,6 +40,7 @@ static uint16_t kbd_current_modifiers(void) {
     if (kbd_ctrl)  mods |= INPUT_MOD_CTRL;
     if (kbd_alt)   mods |= INPUT_MOD_ALT;
     if (kbd_caps)  mods |= INPUT_MOD_CAPS;
+    if (kbd_seed)  mods |= INPUT_MOD_SEED;
     return mods;
 }
 
@@ -50,6 +52,8 @@ static uint8_t kbd_translate(uint8_t make, int extended, int shift) {
             case KBD_SCAN_LEFT:   return INPUT_KEY_LEFT;
             case KBD_SCAN_RIGHT:  return INPUT_KEY_RIGHT;
             case KBD_SCAN_DELETE: return INPUT_KEY_DELETE;
+            case KBD_SCAN_LGUI:
+            case KBD_SCAN_RGUI:   return INPUT_KEY_SEED;
             default:              return 0;
         }
     }
@@ -105,23 +109,16 @@ static void kbd_irq_handler(irq_registers_t* regs) {
     int pressed = (scancode & 0x80) == 0;
     uint8_t make = (uint8_t)(scancode & 0x7F);
 
-    if (!kbd_extended) {
-        switch (make) {
-            case 0x2A: case 0x36:         /* LSHIFT / RSHIFT */
-                kbd_shift = pressed;
-                break;
-            case 0x1D:                     /* LCTRL */
-                kbd_ctrl = pressed;
-                break;
-            case 0x38:                     /* RALT */
-                kbd_alt = pressed;
-                break;
-            case KBD_SCAN_CAPSLOCK:
-                if (pressed) kbd_caps = !kbd_caps;
-                break;
-            default:
-                break;
-        }
+    if (make == 0x2A || make == 0x36) {
+        kbd_shift = pressed;
+    } else if (make == 0x1D) {
+        kbd_ctrl = pressed;
+    } else if (make == 0x38) {
+        kbd_alt = pressed;
+    } else if (!kbd_extended && make == KBD_SCAN_CAPSLOCK) {
+        if (pressed) kbd_caps = !kbd_caps;
+    } else if (kbd_extended && (make == KBD_SCAN_LGUI || make == KBD_SCAN_RGUI)) {
+        kbd_seed = pressed;
     }
 
     kbd_post(scancode, pressed);
@@ -134,6 +131,7 @@ void kbd_init(void) {
     kbd_extended = 0;
     kbd_shift = kbd_ctrl = kbd_alt = 0;
     kbd_caps = 0;
+    kbd_seed = 0;
     kbd_scancodes = 0;
     kbd_overruns = 0;
 

@@ -79,7 +79,7 @@ def main():
 
     proc = subprocess.Popen(
         ['qemu-system-x86_64', '-boot', 'd', '-cdrom', 'greenhouse.iso',
-         '-m', '256M', '-display', 'none', '-monitor', 'stdio',
+         '-m', '1G', '-display', 'none', '-monitor', 'stdio',
          '-serial', f'file:{log}', '-vga', 'std'],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, env=env)
@@ -131,7 +131,11 @@ def main():
         mon('mouse_button 1', 0.3)
         mon('mouse_button 0', 0.6)
         mon('screendump /tmp/gfx_mode.ppm', 1.5)
-        mon('sendkey esc', 1.5)
+        mon('sendkey f3', 0.8)
+        send('logout')
+        mon('sendkey ret', 2.0)
+
+
 
     if hold > 0:
         # The driver holds the surface for the requested time before handing the

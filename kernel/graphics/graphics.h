@@ -27,9 +27,9 @@
 /* Virtual base used to map the back buffer pool.  It must sit *outside* the 1 GiB
  * boot identity map: inside that range every address already resolves to a
  * 2 MiB huge page, so the "is this VA free?" probe would always report a
- * collision.  1 GiB is above the kernel image (1 MiB), user programs (4 MiB)
- * and the kernel heap (0x2000_0000), and nothing else is mapped there. */
-#define GFX_BACKBUF_VIRT_BASE  0x0000000040000000ULL
+ * collision.  0x5000_0000 (1.25 GiB) is safely above the 1 GiB boot map and
+ * well separated from user stack (0x4000_4000). */
+#define GFX_BACKBUF_VIRT_BASE  0x0000000050000000ULL
 
 void  graphics_init(void);
 
@@ -65,6 +65,9 @@ int   graphics_get_width(void);
 int   graphics_get_height(void);
 int   graphics_get_pitch(void);
 int   graphics_get_bpp(void);
+void* graphics_get_target(void);
+void  graphics_mark_dirty(void);
+void  graphics_damage_rows(int y0, int y1);
 
 /* Clipping rectangle (window manager uses it to confine drawing) */
 void  graphics_set_clip(int x, int y, int w, int h);

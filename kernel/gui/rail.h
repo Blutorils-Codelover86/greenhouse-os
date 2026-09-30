@@ -1,5 +1,5 @@
 /* ==============================================================================
- * Greenhouse OS - VERDANT System Rail
+ * Greenhouse OS - Light System Rail
  * ==============================================================================
  */
 
@@ -8,6 +8,8 @@
 
 #include <stdint.h>
 #include "surface.h"
+#include "renderer.h"
+#include "gh_theme.h"
 #include "../input/input.h"
 
 #define RAIL_HEIGHT 30
@@ -23,5 +25,8 @@ void rail_draw(int sw, int sh, surface_t* surfaces, int count, int focused_id);
 int  rail_handle_event(const input_event_t* ev, int sw, int sh,
                        surface_t* surfaces, int count,
                        int* out_action, uint32_t* out_surface_id);
+void rail_request_emerge(void);
+void rail_toggle_locked(void);
+int  rail_is_emerged(void);
 
 #endif /* RAIL_H */

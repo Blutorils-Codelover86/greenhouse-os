@@ -1,10 +1,11 @@
 /* ==============================================================================
- * Greenhouse OS - VERDANT File Browser (implementation)
+ * Greenhouse OS - Light-Mode File Browser (implementation)
  * ==============================================================================
  */
 
 #include "filebrowser.h"
 #include "compositor.h"
+#include "verdant.h"
 #include "../graphics/graphics.h"
 #include "../graphics/font.h"
 #include "../vfs.h"
@@ -99,25 +100,25 @@ void filebrowser_draw(surface_t* s, int cx, int cy, int cw, int ch) {
     int is_r = (fb->current_drive == 'R' || fb->current_drive == 'r');
 
     /* C: Drive Button */
-    graphics_fill_rounded_rect(cx + 8, d_y, 110, 22, 4, is_c ? 0xFF0D2820 : 0xFF121B2A);
-    graphics_draw_rounded_rect(cx + 8, d_y, 110, 22, 4, is_c ? 0xFF10B981 : 0xFF1E3A5F);
-    draw_text(cx + 14, d_y + 4, "[*] C:\\ (FAT32)", is_c ? 0xFF6EE7B7 : 0xFF94A3B8, FONT_TRANSPARENT, 0);
+    graphics_fill_rounded_rect(cx + 8, d_y, 110, 22, 4, is_c ? GH_COLOR_GREEN_LEAF : GH_COLOR_SURFACE_HOVER);
+    graphics_draw_rounded_rect(cx + 8, d_y, 110, 22, 4, GH_COLOR_BORDER_LIGHT);
+    draw_text(cx + 14, d_y + 4, "[*] C:\\ (FAT32)", is_c ? GH_COLOR_WHITE : GH_COLOR_TEXT_PRIMARY, FONT_TRANSPARENT, 0);
 
     /* R: Drive Button */
-    graphics_fill_rounded_rect(cx + 124, d_y, 110, 22, 4, is_r ? 0xFF0D2820 : 0xFF121B2A);
-    graphics_draw_rounded_rect(cx + 124, d_y, 110, 22, 4, is_r ? 0xFF10B981 : 0xFF1E3A5F);
-    draw_text(cx + 130, d_y + 4, "[*] R:\\ (RAMFS)", is_r ? 0xFF6EE7B7 : 0xFF94A3B8, FONT_TRANSPARENT, 0);
+    graphics_fill_rounded_rect(cx + 124, d_y, 110, 22, 4, is_r ? GH_COLOR_BLUE_INFO : GH_COLOR_SURFACE_HOVER);
+    graphics_draw_rounded_rect(cx + 124, d_y, 110, 22, 4, GH_COLOR_BORDER_LIGHT);
+    draw_text(cx + 130, d_y + 4, "[*] R:\\ (RAMFS)", is_r ? GH_COLOR_WHITE : GH_COLOR_TEXT_PRIMARY, FONT_TRANSPARENT, 0);
 
     /* Path readout */
-    draw_text(cx + 242, d_y + 4, "Path: ", 0xFF64748B, FONT_TRANSPARENT, 0);
-    draw_text_clipped(cx + 284, d_y + 4, cw - 290, fb->current_path, 0xFF38BDF8, FONT_TRANSPARENT, 0);
+    draw_text(cx + 242, d_y + 4, "Path: ", GH_COLOR_TEXT_MUTED, FONT_TRANSPARENT, 0);
+    draw_text_clipped(cx + 284, d_y + 4, cw - 290, fb->current_path, GH_COLOR_GREEN_LEAF_DEEP, FONT_TRANSPARENT, 0);
 
     /* 2. File List Pane (Left half) */
     int list_w = (cw > 380) ? (cw / 2) - 4 : cw - 16;
     int pane_y = cy + 36;
     int pane_h = ch - 44;
-    graphics_fill_rect(cx + 8, pane_y, list_w, pane_h, 0xFF080D16);
-    graphics_draw_rect(cx + 8, pane_y, list_w, pane_h, 0xFF1E293B);
+    graphics_fill_rect(cx + 8, pane_y, list_w, pane_h, GH_COLOR_SURFACE);
+    graphics_draw_rect(cx + 8, pane_y, list_w, pane_h, GH_COLOR_BORDER_LIGHT);
 
     int item_h = 20;
     int max_visible = pane_h / item_h;
@@ -128,16 +129,16 @@ void filebrowser_draw(surface_t* s, int cx, int cy, int cw, int ch) {
         int is_sel = (idx == fb->selected_index);
 
         if (is_sel) {
-            graphics_fill_rect(cx + 9, iy, list_w - 2, item_h, 0xFF162E25);
+            graphics_fill_rect(cx + 9, iy, list_w - 2, item_h, GH_COLOR_SURFACE_HOVER);
         }
 
         /* Icon Tag */
         const char* tag = it->is_dir ? "[DIR]" : "[FILE]";
-        uint32_t tag_col = it->is_dir ? 0xFFF59E0B : 0xFF38BDF8;
+        uint32_t tag_col = it->is_dir ? GH_COLOR_AMBER_WARN : GH_COLOR_BLUE_INFO;
         draw_text(cx + 12, iy + 3, tag, tag_col, FONT_TRANSPARENT, 0);
 
         /* Filename */
-        draw_text_clipped(cx + 64, iy + 3, list_w - 140, it->name, is_sel ? 0xFFFFFFFF : 0xFFE2E8F0, FONT_TRANSPARENT, 0);
+        draw_text_clipped(cx + 64, iy + 3, list_w - 140, it->name, is_sel ? GH_COLOR_TEXT_PRIMARY : GH_COLOR_TEXT_SECONDARY, FONT_TRANSPARENT, 0);
 
         /* Size */
         if (!it->is_dir) {
@@ -147,7 +148,7 @@ void filebrowser_draw(surface_t* s, int cx, int cy, int cw, int ch) {
             fb_put_uint(s_buf, &sn, sizeof(s_buf), it->size);
             s_buf[sn++] = 'B';
             s_buf[sn] = '\0';
-            draw_text(cx + list_w - 60, iy + 3, s_buf, 0xFF64748B, FONT_TRANSPARENT, 0);
+            draw_text(cx + list_w - 60, iy + 3, s_buf, GH_COLOR_TEXT_MUTED, FONT_TRANSPARENT, 0);
         }
     }
 
@@ -155,15 +156,29 @@ void filebrowser_draw(surface_t* s, int cx, int cy, int cw, int ch) {
     if (cw > 380) {
         int prev_x = cx + list_w + 14;
         int prev_w = cw - list_w - 22;
-        graphics_fill_rect(prev_x, pane_y, prev_w, pane_h, 0xFF080D16);
-        graphics_draw_rect(prev_x, pane_y, prev_w, pane_h, 0xFF1E293B);
+        graphics_fill_rect(prev_x, pane_y, prev_w, pane_h, GH_COLOR_SURFACE);
+        graphics_draw_rect(prev_x, pane_y, prev_w, pane_h, GH_COLOR_BORDER_LIGHT);
 
         /* Preview Header */
-        graphics_fill_rect(prev_x + 1, pane_y + 1, prev_w - 2, 22, 0xFF0F1B2C);
-        draw_text(prev_x + 8, pane_y + 4, "Preview: ", 0xFF64748B, FONT_TRANSPARENT, 0);
+        graphics_fill_rect(prev_x + 1, pane_y + 1, prev_w - 2, 22, GH_COLOR_SURFACE_HOVER);
+        draw_text(prev_x + 8, pane_y + 4, "Preview: ", GH_COLOR_TEXT_MUTED, FONT_TRANSPARENT, 0);
         draw_text_clipped(prev_x + 68, pane_y + 4, prev_w - 74,
                           fb->has_preview ? fb->preview_name : "(Select a file)",
-                          0xFF34D399, FONT_TRANSPARENT, 0);
+                          GH_COLOR_GREEN_LEAF_DEEP, FONT_TRANSPARENT, 0);
+
+        /* Check if selected file is an ELF binary */
+        int is_elf = 0;
+        if (fb->has_preview) {
+            int plen = 0;
+            while (fb->preview_name[plen]) plen++;
+            if (plen >= 4) {
+                const char* ext = fb->preview_name + plen - 4;
+                if (ext[0] == '.' && (ext[1] == 'e' || ext[1] == 'E') &&
+                    (ext[2] == 'l' || ext[2] == 'L') && (ext[3] == 'f' || ext[3] == 'F')) {
+                    is_elf = 1;
+                }
+            }
+        }
 
         /* Preview Text Content */
         if (fb->has_preview) {
@@ -172,20 +187,32 @@ void filebrowser_draw(surface_t* s, int cx, int cy, int cw, int ch) {
             char line_buf[64];
             int li = 0;
             int r_lines = 0;
-            for (int p = 0; p < fb->preview_len && r_lines < 10; p++) {
+            int max_text_lines = is_elf ? 7 : 10;
+            for (int p = 0; p < fb->preview_len && r_lines < max_text_lines; p++) {
                 char c = fb->preview_buf[p];
                 if (c == '\n' || li >= 48) {
                     line_buf[li] = '\0';
-                    draw_text_clipped(prev_x + 8, line_y + r_lines * gh, prev_w - 16, line_buf, 0xFFCBD5E1, FONT_TRANSPARENT, 0);
+                    draw_text_clipped(prev_x + 8, line_y + r_lines * gh, prev_w - 16, line_buf, GH_COLOR_TEXT_SECONDARY, FONT_TRANSPARENT, 0);
                     r_lines++;
                     li = 0;
                 } else if (c >= 0x20 && c <= 0x7E) {
                     line_buf[li++] = c;
                 }
             }
-            if (li > 0 && r_lines < 10) {
+            if (li > 0 && r_lines < max_text_lines) {
                 line_buf[li] = '\0';
-                draw_text_clipped(prev_x + 8, line_y + r_lines * gh, prev_w - 16, line_buf, 0xFFCBD5E1, FONT_TRANSPARENT, 0);
+                draw_text_clipped(prev_x + 8, line_y + r_lines * gh, prev_w - 16, line_buf, GH_COLOR_TEXT_SECONDARY, FONT_TRANSPARENT, 0);
+            }
+
+            /* Draw [>] Run in Terminal action button for ELF executables */
+            if (is_elf) {
+                int btn_w = 144;
+                int btn_h = 24;
+                int btn_rx = prev_x + 8;
+                int btn_ry = pane_y + pane_h - btn_h - 6;
+                graphics_fill_rounded_rect(btn_rx, btn_ry, btn_w, btn_h, 4, GH_COLOR_GREEN_LEAF_SOFT);
+                graphics_draw_rounded_rect(btn_rx, btn_ry, btn_w, btn_h, 4, GH_COLOR_GREEN_LEAF);
+                draw_text(btn_rx + 8, btn_ry + 5, "[>] Run in Terminal", GH_COLOR_WHITE, FONT_TRANSPARENT, 0);
             }
         }
     }
@@ -211,6 +238,42 @@ int filebrowser_event(surface_t* s, const input_event_t* ev) {
             return 1;
         }
 
+        /* Check [>] Run in Terminal button click */
+        if (cw > 380 && fb->has_preview) {
+            int list_w = (cw / 2) - 4;
+            int pane_y = cy + 36;
+            int pane_h = ch - 44;
+            int prev_x = cx + list_w + 14;
+            int btn_w = 144;
+            int btn_h = 24;
+            int btn_rx = prev_x + 8;
+            int btn_ry = pane_y + pane_h - btn_h - 6;
+
+            int plen = 0;
+            while (fb->preview_name[plen]) plen++;
+            if (plen >= 4) {
+                const char* ext = fb->preview_name + plen - 4;
+                if (ext[0] == '.' && (ext[1] == 'e' || ext[1] == 'E') &&
+                    (ext[2] == 'l' || ext[2] == 'L') && (ext[3] == 'f' || ext[3] == 'F')) {
+                    if (ev->x >= btn_rx && ev->x <= btn_rx + btn_w &&
+                        ev->y >= btn_ry && ev->y <= btn_ry + btn_h) {
+                        /* Build full path and run in terminal */
+                        char full_path[FB_PATH_MAX];
+                        fb_strcpy(full_path, sizeof(full_path), fb->current_path);
+                        int len = 0;
+                        while (full_path[len]) len++;
+                        if (len > 0 && full_path[len - 1] != '\\' && full_path[len - 1] != '/') {
+                            full_path[len++] = '\\';
+                            full_path[len] = '\0';
+                        }
+                        fb_strcpy(full_path + len, sizeof(full_path) - len, fb->preview_name);
+                        verdant_open_terminal_run(full_path);
+                        return 1;
+                    }
+                }
+            }
+        }
+
         /* File list clicks */
         int list_w = (cw > 380) ? (cw / 2) - 4 : cw - 16;
         int pane_y = cy + 36;
@@ -231,7 +294,7 @@ int filebrowser_event(surface_t* s, const input_event_t* ev) {
                         int len = 0;
                         while (parent[len]) len++;
                         if (len > 3) {
-                            if (parent[len - 1] == '\\' || parent[len - 1] == '/') len--;
+                            if (parent[len - 1] == '\\' || parent[len - 1] != '/') len--;
                             while (len > 3 && parent[len - 1] != '\\' && parent[len - 1] != '/') len--;
                             parent[len] = '\0';
                         }

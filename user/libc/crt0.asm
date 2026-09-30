@@ -10,12 +10,11 @@ extern exit
 
 section .text
 _start:
-    ; Align stack to 16 bytes
+    ; Align stack to 16 bytes while preserving rdi (argc) and rsi (argv)
+    push rbp
+    mov rbp, rsp
     and rsp, -16
 
-    ; Call main(argc=0, argv=NULL)
-    xor rdi, rdi
-    xor rsi, rsi
     call main
 
     ; Call exit(main_result)

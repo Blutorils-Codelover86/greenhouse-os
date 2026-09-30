@@ -24,7 +24,7 @@ for p in (log,) + paths:
 
 proc = subprocess.Popen(
     ['qemu-system-x86_64', '-boot', 'd', '-cdrom', 'greenhouse.iso', '-hda', 'disk.img',
-     '-m', '256M', '-display', 'none', '-monitor', 'stdio',
+     '-m', '1G', '-display', 'none', '-monitor', 'stdio',
      '-serial', f'file:{log}', '-vga', 'std'],
     stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     text=True, env=env)

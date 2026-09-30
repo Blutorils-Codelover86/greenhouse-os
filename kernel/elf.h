@@ -67,5 +67,6 @@ typedef struct {
 } __attribute__((packed)) Elf64_Phdr;
 
 int elf_load_executable(const char* filepath, process_t** out_proc);
+int elf_load_executable_args(const char* filepath, int argc, char** argv, process_t** out_proc);
 
 #endif /* ELF_H */
